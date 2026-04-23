@@ -1,0 +1,40 @@
+.env
+.env.*.local
+
+# Foundation skill repo (separate upstream; not part of this project)
+foundation/
+
+# Local Claude Code session settings (user-specific)
+.claude/settings.local.json
+
+# External repos cloned for reference — not part of this project
+dsc-smartscraper/
+
+# Runtime artefacts
+.tmp/
+cache/
+cache-*/
+output/
+output-*/
+state/
+attachments/
+*.sqlite
+*.sqlite-journal
+*.jsonl.zst
+*.zst
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+dist/
+build/
+*.egg-info/
+.venv/
+.mypy_cache/
+.ruff_cache/
+*.log

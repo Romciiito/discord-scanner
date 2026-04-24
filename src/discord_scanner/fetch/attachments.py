@@ -24,6 +24,7 @@ Authorization MUST NOT be sent to `cdn.discordapp.com` — the REST client's
 
 from __future__ import annotations
 
+import io  # noqa: F401 — used in type annotation via string
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -144,8 +145,10 @@ async def _stream_to_disk(
     sniff_done = False
 
     # Open file only AFTER we have a valid MIME sniff — avoids creating an
-    # empty file on mismatch.
+    # empty file on mismatch. Keep ONE handle open across all chunks (reviewer
+    # MAJOR: per-chunk reopen defeats OS buffering).
     fh: Path | None = None
+    out_fh: io.BufferedWriter | None = None
     try:
         async for chunk in resp.aiter_bytes():
             if not sniff_done:
@@ -184,9 +187,10 @@ async def _stream_to_disk(
                             bytes_read=bytes_read,
                             cdn_url=cdn_url,
                         )
-                    # Flush the buffered sniff data out to the real file
-                    with target_path.open("wb") as out:
-                        out.write(sniff_buffer)
+                    # Flush the buffered sniff data out to the real file.
+                    # We keep the handle open to append later chunks.
+                    out_fh = target_path.open("wb")
+                    out_fh.write(sniff_buffer)
                     fh = target_path
                     sniff_buffer = b""
                     continue
@@ -202,6 +206,9 @@ async def _stream_to_disk(
                     cap=size_cap,
                     msg_id=msg_id,
                 )
+                if out_fh is not None:
+                    out_fh.close()
+                    out_fh = None
                 _delete_partial(target_path)
                 return DownloadResult(
                     saved_path=None,
@@ -209,8 +216,8 @@ async def _stream_to_disk(
                     bytes_read=bytes_read,
                     cdn_url=cdn_url,
                 )
-            with target_path.open("ab") as out:
-                out.write(chunk)
+            if out_fh is not None:
+                out_fh.write(chunk)
 
         # Stream ended. If we never reached sniff gate (tiny image < 16 B),
         # run a best-effort sniff on whatever we have.

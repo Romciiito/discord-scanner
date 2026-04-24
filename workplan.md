@@ -333,11 +333,14 @@ Phase 0 is DONE when ALL of the following are true:
 
 ---
 
-## Phase 6 — Fetch (Messages + Pinned + Threads Pagination)
+## Phase 6 — Fetch (Messages + Pinned + Threads Pagination) ✅
 
 > **Purpose**: The core scraping loop — paginate messages, fetch pinned, enumerate + fetch thread histories, honour jitter + burst pause.
 
-**Status**: `[ ] Not started`
+**Status**: `[x] ✅ DONE` (2026-04-24)
+**SEC-P0 verified**: SEC-P0-14 (jitter via sleep_with_jitter, never time.sleep), SEC-P0-15 (ChannelAbort propagates to return).
+**Coverage**: fetch/messages.py + pinned.py + threads.py + jitter.py all >= 85%; models/message.py 94%.
+**Note**: no new SEC-P0 items cleared — this phase consumes the P2 REST + retry + rate-limit infrastructure and the P4 models layer.
 **Depends on**: Phase 5 `✅ DONE`
 **Parallel with**: Test Track
 

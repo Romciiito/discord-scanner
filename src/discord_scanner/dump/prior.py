@@ -32,6 +32,11 @@ def resolve_prior_date(guild_dir: Path, current_date: str) -> str | None:
         return None
     candidates: list[str] = []
     for entry in guild_dir.iterdir():
+        # TODO-P8-02 fix: never trust symlinked YYYY-MM-DD dirs. A symlinked
+        # entry named `2026-04-20` could point anywhere; downstream readers
+        # that do `guild_dir / prior_date` would land at the symlink target.
+        if entry.is_symlink():
+            continue
         if not entry.is_dir():
             continue
         name = entry.name

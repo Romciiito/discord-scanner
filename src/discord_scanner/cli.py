@@ -368,13 +368,47 @@ def _build_dry_run_plan(settings: Settings, guild_filter: str | None) -> list[st
 
 
 @app.command()
-def daemon(ctx: typer.Context) -> None:
-    """Long-running scan loop (Phase 9)."""
-    _ = _require_config(ctx)
+def daemon(
+    ctx: typer.Context,
+    once: Annotated[
+        bool,
+        typer.Option("--once", help="Run one scan iteration then exit (for smoke tests)"),
+    ] = False,
+    max_iterations: Annotated[
+        int | None,
+        typer.Option("--max-iterations", help="Cap the loop after N iterations (tests only)"),
+    ] = None,
+) -> None:
+    """Long-running scan loop. Retention prune → scan → sleep(jitter) → repeat.
+
+    SIGINT / SIGTERM trigger a clean shutdown after the current iteration.
+    `--once` forces exit after the first iteration — used by smoke tests
+    and operators who prefer external schedulers (cron, systemd timer).
+    """
+    import asyncio
+
+    from discord_scanner.daemon import DaemonLoop
+
+    settings = _require_config(ctx)
+
+    async def _stub_scan(_s: Settings) -> None:
+        # P10 wiring replaces this with the full per-guild scan closure.
+        # For P9 smoke, the daemon loop is exercised in tests with a
+        # synthetic scan function; production wiring lands with P10.
+        get_logger().info("daemon_scan_stub", note="real scan wired in P10")
+
+    loop = DaemonLoop(settings, _stub_scan)
+    cap = 1 if once else max_iterations
+    try:
+        asyncio.run(loop.run_forever(max_iterations=cap))
+    except KeyboardInterrupt:
+        loop.request_shutdown()
+    stats = loop.stats
     console.print(
-        "[yellow]not implemented:[/yellow] `daemon` is delivered in Phase 9. See workplan.md."
+        f"[green]daemon[/green] exited after {stats.iterations} iteration(s); "
+        f"last_error={stats.last_scan_error or 'none'}"
     )
-    raise typer.Exit(2)
+    raise typer.Exit(0)
 
 
 @app.command()

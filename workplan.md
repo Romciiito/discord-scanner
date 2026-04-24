@@ -410,7 +410,13 @@ Phase 0 is DONE when ALL of the following are true:
 
 ---
 
-## Phase 8 — Dump Writers (zstd JSONL + Pinned + Threads + meta + prior)
+## Phase 8 — Dump Writers (zstd JSONL + Pinned + Threads + meta + prior) ✅
+
+**Status**: `[x] ✅ DONE` (2026-04-24)
+**Acceptance criterion #9 met**: two cold runs on the same input produce byte-identical decompressed JSONL (asserted by `test_write_jsonl_zst_decompressed_bytes_identical` + `test_write_jsonl_is_byte_identical_across_runs`).
+**Coverage**: sort.py 100%, jsonl_writer.py 89%, meta.py 97%, prior.py 91%, zstd_writer.py 95%.
+**NaN/Infinity rejection**: `write_json` + `write_jsonl` pass `allow_nan=False` → `ValueError` on any NaN / Infinity (claude-rules MUST).
+
 
 > **Purpose**: Serialise fetched data to the Stage 2 → Stage 3 on-disk contract with sort stability + determinism.
 

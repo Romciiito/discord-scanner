@@ -199,12 +199,66 @@ def resolve(
 
 @app.command(name="list-guilds")
 def list_guilds(ctx: typer.Context) -> None:
-    """List guilds the burner has joined (Phase 2)."""
-    _ = _require_config(ctx)
-    console.print(
-        "[yellow]not implemented:[/yellow] `list-guilds` is delivered in Phase 2. See workplan.md."
+    """List guilds the burner has joined.
+
+    SEC-P0-15 / SEC-P0-16 / SEC-P0-17: uses the shared AsyncClient with
+    rate-limit, captcha detection, and URL allowlist enforcement.
+    Exit codes: 0 success; 1 config error; 2 runtime (captcha / 5xx exhausted);
+    3 detected-ban (401 Unauthorized → suggests token invalid).
+    """
+    import asyncio
+
+    import httpx
+
+    from discord_scanner.session.auth import (
+        PlaintextKeyringRefused,
+        TokenNotFound,
+        load_token,
     )
-    raise typer.Exit(2)
+    from discord_scanner.session.captcha import CaptchaAborted
+    from discord_scanner.session.rest import make_client, persist_cookies
+
+    settings = _require_config(ctx)
+
+    try:
+        token, source = load_token(settings)
+    except PlaintextKeyringRefused as e:
+        console.print(f"[red]refusing:[/red] {e}")
+        raise typer.Exit(1) from e
+    except TokenNotFound as e:
+        console.print(f"[red]no token:[/red] {e}")
+        raise typer.Exit(1) from e
+
+    get_logger().info("list_guilds_start", token_source=source.value)
+
+    async def _run() -> int:
+        client = make_client(settings, token)
+        try:
+            resp = await client.get("https://discord.com/api/v10/users/@me/guilds")
+            if resp.status_code == 401:
+                console.print("[red]401 Unauthorized:[/red] token invalid (possible ban).")
+                return 3
+            if resp.status_code >= 400:
+                console.print(f"[red]HTTP {resp.status_code}:[/red] {resp.text[:200]}")
+                return 2
+            guilds = resp.json()
+            for g in guilds:
+                console.print(f"  {g.get('id')}  {g.get('name')}")
+            console.print(f"[green]ok[/green] {len(guilds)} guilds.")
+            return 0
+        finally:
+            await client.aclose()
+            persist_cookies(client, settings)
+
+    try:
+        exit_code = asyncio.run(_run())
+    except CaptchaAborted as e:
+        console.print(f"[red]captcha:[/red] {e}")
+        raise typer.Exit(2) from e
+    except httpx.HTTPError as e:
+        console.print(f"[red]http error:[/red] {e}")
+        raise typer.Exit(2) from e
+    raise typer.Exit(exit_code)
 
 
 @app.command()

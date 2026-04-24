@@ -52,9 +52,55 @@ def test_resolve_not_implemented_returns_exit_2(tmp_config_yaml: Path) -> None:
     assert result.exit_code == 2
 
 
-def test_list_guilds_not_implemented_returns_exit_2(tmp_config_yaml: Path) -> None:
+def test_list_guilds_without_token_exits_one(
+    tmp_config_yaml: Path, mock_keyring: MagicMock
+) -> None:
+    """P2 wiring: `list-guilds` with no token in any tier → exit 1 (TokenNotFound)."""
     result = runner.invoke(app, ["--config", str(tmp_config_yaml), "list-guilds"])
-    assert result.exit_code == 2
+    assert result.exit_code == 1
+    assert "no token" in result.stdout.lower()
+
+
+def test_list_guilds_round_trips_with_respx(
+    tmp_config_yaml: Path,
+    mock_keyring: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P2 wiring: with token + respx mock → 0 and prints guild ids."""
+    import httpx
+    import respx
+
+    monkeypatch.setenv("DISCORD_TOKEN", "TOK_FOR_TEST")
+    with respx.mock() as mock:
+        mock.get("https://discord.com/api/v10/users/@me/guilds").mock(
+            return_value=httpx.Response(
+                200,
+                json=[{"id": "111", "name": "Alpha"}, {"id": "222", "name": "Beta"}],
+            )
+        )
+        result = runner.invoke(app, ["--config", str(tmp_config_yaml), "list-guilds"])
+    assert result.exit_code == 0, result.stdout
+    assert "111" in result.stdout
+    assert "Alpha" in result.stdout
+    assert "Beta" in result.stdout
+
+
+def test_list_guilds_401_exits_three(
+    tmp_config_yaml: Path,
+    mock_keyring: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exit-code contract: 401 on `/users/@me/guilds` → exit 3 (detected-ban)."""
+    import httpx
+    import respx
+
+    monkeypatch.setenv("DISCORD_TOKEN", "TOK_FOR_TEST")
+    with respx.mock() as mock:
+        mock.get("https://discord.com/api/v10/users/@me/guilds").mock(
+            return_value=httpx.Response(401, json={"message": "Unauthorized"})
+        )
+        result = runner.invoke(app, ["--config", str(tmp_config_yaml), "list-guilds"])
+    assert result.exit_code == 3
 
 
 def test_missing_config_for_network_commands_returns_exit_1() -> None:

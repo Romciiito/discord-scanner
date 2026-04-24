@@ -172,9 +172,14 @@ Phase 0 is DONE when ALL of the following are true:
 
 ---
 
-## Phase 2 — Auth + Session Core (REST)
+## Phase 2 — Auth + Session Core (REST) ✅
 
 > **Purpose**: Ship a working httpx HTTP/2 REST client with the full Discord header set, per-host token bucket, tenacity retries, URL allowlist, and per-burner cookie jar.
+
+**Status**: `[x] ✅ DONE` (2026-04-24)
+**SEC-P0 cleared this phase**: 05, 07, 09, 11, 12, 14, 15, 16, 17, 18 + Authorization-to-CDN strip (claude-rules) + 429-counter consecutive-reset fix.
+**Coverage**: overall 88.55%, `session/rest.py` = **95%** (above 85% merge-blocker floor).
+**Code-review (Opus)**: 0 BLOCKING, 2 MAJOR (both fixed inline — CDN auth strip + 429 counter reset), 7 MINOR.
 
 **Status**: `[ ] Not started`
 **Depends on**: Phase 1 `✅ DONE`

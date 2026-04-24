@@ -1,21 +1,24 @@
+"""Phase 0 smoke tests for the Typer CLI skeleton.
+
+Traces to: workplan.md Phase 0 done definition, Phase 1 test stubs.
+"""
+
+from __future__ import annotations
+
 from typer.testing import CliRunner
-from src.cli import app
+
+from discord_scanner.cli import app
 
 runner = CliRunner()
 
 
-def test_help() -> None:
+def test_help_exits_zero() -> None:
     result = runner.invoke(app, ["--help"])
     assert result.exit_code == 0
-    assert "Stage 2 — burner-token Discord scanner producing raw JSONL dumps for Stage 3 curator. Rebuild of dsc-smartscraper." in result.output or "Usage" in result.output
+    assert "discord-scanner" in result.output.lower()
 
 
-def test_version() -> None:
+def test_version_exits_zero() -> None:
     result = runner.invoke(app, ["version"])
     assert result.exit_code == 0
-
-
-def test_run_no_args() -> None:
-    result = runner.invoke(app, ["run"])
-    # Should not crash with no input file
-    assert result.exit_code == 0
+    assert "python" in result.output

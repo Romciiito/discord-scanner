@@ -1,5 +1,8 @@
+# Secrets
 .env
 .env.*.local
+*.keyring
+*.credentials
 
 # Foundation skill repo (separate upstream; not part of this project)
 foundation/

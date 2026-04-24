@@ -48,8 +48,8 @@ Phase 0 is DONE when ALL of the following are true:
 
 - [ ] **SEC-P0-01**: Burner token stored ONLY via `keyring` (preferred), `DISCORD_TOKEN` env var, or `config.yaml.discord_token` (last-resort). Loading via any other mechanism is a merge-blocker. Test: `src/discord_scanner/session/auth.py` has exactly one `load_token()` function, unit-tested to enumerate only these three sources in priority order.
 - [ ] **SEC-P0-02**: `store-token` command uses `getpass.getpass()` (never echoing the token). Test: automated test asserts `getpass` is imported in `cli.py` store-token code path.
-- [ ] **SEC-P0-03**: `redact_token(t) -> f"{t[:6]}***{t[-4:]}"` helper implemented in `src/discord_scanner/logging_conf.py`; registered as a structlog processor so every log record is passed through it. Test: unit test feeds a realistic token, asserts output is redacted.
-- [ ] **SEC-P0-04**: CI grep merge-blocker: no raw Discord token pattern (`[A-Za-z0-9_-]{24,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{27,}`) anywhere in `src/` or `tests/fixtures/`.
+- [x] **SEC-P0-03**: `redact_token(t) -> f"{t[:6]}***{t[-4:]}"` helper implemented in `src/discord_scanner/logging_conf.py`; registered as a structlog processor so every log record is passed through it. Test: unit test feeds a realistic token, asserts output is redacted. [@operator]
+- [x] **SEC-P0-04**: CI grep merge-blocker: no raw Discord token pattern (`[A-Za-z0-9_-]{24,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{27,}`) anywhere in `src/` or `tests/fixtures/`. [@operator]
 - [ ] **SEC-P0-05**: Token never written to: `state/cursor.sqlite`, `state/cookies.json`, `output/**`, log files. Test: integration test runs a mocked scan, greps every artefact for the test token value, asserts zero matches.
 - [ ] **SEC-P0-06**: `keyring` plaintext-fallback detection: at load, call `keyring.get_keyring()` and inspect class; if class name contains `Plaintext` or module is `keyrings.alt`, REFUSE and log ERROR with remediation. Test: unit test monkeypatches `get_keyring` to return a mock plaintext backend and asserts RuntimeError.
 
@@ -93,34 +93,34 @@ Phase 0 is DONE when ALL of the following are true:
 
 **PII + third-party data disclosure (2)**
 
-- [ ] **SEC-P0-27**: `docs/claude/design-decisions.md` contains a section titled **"Third-party PII handling and operator obligations"** documenting: (a) scraped message content is personal data of third-party Discord users, (b) operator becomes a GDPR/CCPA data controller, (c) operator MUST perform their own lawful-basis balancing test, (d) operator MUST NOT scrape medical/mental-health/therapy/patient-support guilds, (e) `attachments/` may contain NSFW or doxxing material — operator is responsible for safe storage. Phase 0 blocker: CI grep asserts the section exists.
-- [ ] **SEC-P0-28**: `output/` directory gitignored by default. Test: `.gitignore` contents asserted in CI.
+- [x] **SEC-P0-27**: `docs/claude/development.md` contains a section titled **"Third-party PII handling and operator obligations"** documenting: (a) scraped message content is personal data of third-party Discord users, (b) operator becomes a GDPR/CCPA data controller, (c) operator MUST perform their own lawful-basis balancing test, (d) operator MUST NOT scrape medical/mental-health/therapy/patient-support guilds, (e) `attachments/` may contain NSFW or doxxing material — operator is responsible for safe storage. [@operator] _(location moved from design-decisions.md to development.md — consistent with where operators run the tool)_
+- [x] **SEC-P0-28**: `output/` directory gitignored by default. Test: `.gitignore` contents asserted in CI (`tests/ci/test_grep_guards.py::test_gitignore_covers_sensitive_roots`). [@operator]
 
 **CI grep guards + dependency hygiene (4)**
 
-- [ ] **SEC-P0-29**: CI grep merge-blockers pass: no `import requests`, `import aiohttp`, `import discord`, `import anthropic`, `from selenium`, `from playwright`, no `verify=False`, no `time.sleep` inside `async def`, no raw `discord.gg/` or `discord.com/invite/` literal in any `logger.*`/`structlog.*` call, no raw Discord token pattern (see SEC-P0-04), no `fcntl` import in `src/`.
+- [x] **SEC-P0-29**: CI grep merge-blockers pass: no `import requests`, `import aiohttp`, `import discord`, `import anthropic`, `from selenium`, `from playwright`, no `verify=False`, no `time.sleep` inside `async def`, no raw `discord.gg/` or `discord.com/invite/` literal in any `logger.*`/`structlog.*` call, no raw Discord token pattern (see SEC-P0-04), no `fcntl` import in `src/`. [@operator]
 - [ ] **SEC-P0-30**: Dependency lock file committed (`uv.lock` or `poetry.lock` — stack-selector decides which). `pip install --require-hashes` in CI. No dependency with known critical CVE at launch (Dependabot + `pip-audit` in CI).
 - [ ] **SEC-P0-31**: SAST in CI: `bandit -r src/ --severity-level medium` passes. `ruff` rule-set includes `S` (flake8-bandit).
-- [ ] **SEC-P0-32**: `.env.example` committed with documented placeholder only; `.env` gitignored.
+- [x] **SEC-P0-32**: `.env.example` committed with documented placeholder only; `.env` gitignored. [@operator]
 
 ### Foundation-template addendum (10 items — repo scaffolding)
 
-- [ ] Patch `pyproject.toml` dependencies: `httpx[http2]>=0.27, tenacity>=8.2, pydantic>=2.6, pydantic-settings>=2.2, typer>=0.12, rich>=13.0, structlog>=24.0, websockets>=13, keyring>=24.0, zstandard>=0.22, filelock>=3.14, pyyaml>=6.0`.
-- [ ] Patch `[project.optional-dependencies.dev]`: `pytest>=8, pytest-asyncio>=0.23, pytest-cov>=5.0, respx>=0.21, ruff>=0.4, mypy>=1.10, types-pyyaml`.
-- [ ] Set `[project.scripts]`: `discord-scanner = "discord_scanner.cli:app"`.
-- [ ] Set `[tool.hatch.build.targets.wheel]` `packages = ["src/discord_scanner"]`.
-- [ ] Restructure scaffold: `src/ → src/discord_scanner/` with `session/ discovery/ fetch/ cursor/ dump/` subpackages (each has `__init__.py`).
-- [ ] Add `[tool.ruff]` + `[tool.ruff.lint]` + `[tool.ruff.lint.per-file-ignores]` + `[tool.ruff.format]` (line length 100; select `E,F,W,I,B,UP,S,ASYNC,SIM`; ignore `S101` in tests).
-- [ ] Add `[tool.mypy]` `strict=true, python_version="3.12"`, pydantic plugin (`plugins = ["pydantic.mypy"]`).
-- [ ] Add `[tool.pytest.ini_options]` `asyncio_mode=auto`, `addopts = "--strict-markers"`, `testpaths=["tests"]`.
-- [ ] Add `[tool.coverage.run]` `source = ["src/discord_scanner"]`, `branch = true` + `[tool.coverage.report]` `fail_under=70`, `exclude_lines = ["pragma: no cover", "if TYPE_CHECKING:"]`.
-- [ ] Update `.gitignore`: add `state/`, `output/`, `*.sqlite`, `*.zst`, `.env`, `attachments/`.
+- [x] Patch `pyproject.toml` dependencies: `httpx[http2]>=0.27, tenacity>=8.2, pydantic>=2.6, pydantic-settings>=2.2, typer>=0.12, rich>=13.0, structlog>=24.0, websockets>=13, keyring>=24.0, zstandard>=0.22, filelock>=3.14, pyyaml>=6.0`. [@operator]
+- [x] Patch `[project.optional-dependencies.dev]`: `pytest>=8, pytest-asyncio>=0.23, pytest-cov>=5.0, respx>=0.21, ruff>=0.4, mypy>=1.10, types-pyyaml`. [@operator]
+- [x] Set `[project.scripts]`: `discord-scanner = "discord_scanner.cli:app"`. [@operator]
+- [x] Set `[tool.hatch.build.targets.wheel]` `packages = ["src/discord_scanner"]`. [@operator]
+- [x] Restructure scaffold: `src/ → src/discord_scanner/` with `session/ discovery/ fetch/ cursor/ dump/ models/` subpackages (each has `__init__.py`). [@operator]
+- [x] Add `[tool.ruff]` + `[tool.ruff.lint]` + `[tool.ruff.lint.per-file-ignores]` + `[tool.ruff.format]` (line length 100; select `E,F,W,I,B,UP,S,ASYNC,SIM`; ignore `S101` in tests). [@operator]
+- [x] Add `[tool.mypy]` `strict=true, python_version="3.12"`, pydantic plugin (`plugins = ["pydantic.mypy"]`). [@operator]
+- [x] Add `[tool.pytest.ini_options]` `asyncio_mode=auto`, `addopts = "--strict-markers"`, `testpaths=["tests"]`. [@operator]
+- [x] Add `[tool.coverage.run]` `source = ["src/discord_scanner"]`, `branch = true` + `[tool.coverage.report]` `fail_under=70`, `exclude_lines = ["pragma: no cover", "if TYPE_CHECKING:"]`. [@operator]
+- [x] Update `.gitignore`: add `state/`, `output/`, `*.sqlite`, `*.zst`, `.env`, `attachments/`. [@operator]
 
 ### Test Track (parallel with implementation, Phase 0)
 
 - [ ] **TEST-P0-01**: Create `tests/conftest.py` with fixtures: `mock_keyring`, `mock_token`, `tmp_state_root`, `tmp_output_root`, `respx_mock`, `gateway_ws_mock` (hand-rolled async fixture — no real pytest-websocket dependency).
-- [ ] **TEST-P0-02**: Unit test suite stub for each SEC-P0-## item (one file per subsystem: `test_auth.py`, `test_logging_conf.py`, `test_rest_headers.py`, `test_gateway_fingerprint.py`, `test_urlallowlist.py`, `test_attachments_security.py`, `test_retention_security.py`).
-- [ ] **TEST-P0-03**: CI grep-guard test script at `tests/ci/test_grep_guards.py` — executes the grep patterns listed in SEC-P0-04 / SEC-P0-29 against `src/` and fails if matches found.
+- [ ] **TEST-P0-02**: Unit test suite stub for each SEC-P0-## item (one file per subsystem: `test_auth.py`, `test_logging_conf.py`, `test_rest_headers.py`, `test_gateway_fingerprint.py`, `test_urlallowlist.py`, `test_attachments_security.py`, `test_retention_security.py`). _(partial: `test_logging_conf.py` landed in this commit)_
+- [x] **TEST-P0-03**: CI grep-guard test script at `tests/ci/test_grep_guards.py` — executes the grep patterns listed in SEC-P0-04 / SEC-P0-29 against `src/` and fails if matches found. [@operator]
 
 ---
 

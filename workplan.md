@@ -298,11 +298,14 @@ Phase 0 is DONE when ALL of the following are true:
 
 ---
 
-## Phase 5 — Cursor + State (sqlite + filelock)
+## Phase 5 — Cursor + State (sqlite + filelock) ✅
 
 > **Purpose**: Persist per-channel cursor state with cross-platform locking and parameterised SQL.
 
-**Status**: `[ ] Not started`
+**Status**: `[x] ✅ DONE` (2026-04-24)
+**SEC-P0 cleared this phase**: 22 (partial — state file perms 0o600 on create).
+**Coverage**: `cursor/state.py` ~96%, `cursor/lock.py` ~95%; 12 cursor tests, 2 skipped (POSIX perm checks on Windows).
+**Design:** WAL mode + single-writer filelock. `status` command now reads cursor rows and renders them via rich.table.
 **Depends on**: Phase 4 `✅ DONE`
 **Parallel with**: Test Track
 

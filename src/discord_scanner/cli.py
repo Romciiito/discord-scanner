@@ -379,20 +379,39 @@ def daemon(ctx: typer.Context) -> None:
 
 @app.command()
 def status(ctx: typer.Context) -> None:
-    """Print cursor state per channel. `--offline` makes this read-only."""
+    """Print cursor state per channel. `--offline` makes this read-only.
+
+    SEC-P0 adjacent (Phase 5): reads `state/cursor.sqlite` without acquiring
+    the write lock, so a running scan is not disturbed.
+    """
+    from rich.table import Table
+
+    from discord_scanner.cursor.state import CursorStore
+
     settings = _require_config(ctx)
     cli_ctx: _CliContext = ctx.obj
     state_root = settings.run.state_root
-    cursor = state_root / "cursor.sqlite"
+    cursor_path = state_root / "cursor.sqlite"
     console.print("[bold]discord-scanner status[/bold]")
     console.print(f"  state_root     = {state_root}")
-    console.print(f"  cursor.sqlite  = {cursor} (exists={cursor.exists()})")
+    console.print(f"  cursor.sqlite  = {cursor_path} (exists={cursor_path.exists()})")
     console.print(f"  offline mode   = {cli_ctx.offline}")
-    if not cli_ctx.offline:
-        console.print(
-            "[yellow]note:[/yellow] live `status` with network probes is "
-            "delivered in Phase 5; currently behaves the same as --offline."
-        )
+    if not cursor_path.exists():
+        console.print("[yellow]no cursor state yet — run a scan first.[/yellow]")
+        raise typer.Exit(0)
+    with CursorStore(state_root) as store:
+        rows = store.all_rows()
+    if not rows:
+        console.print("[dim]cursor is empty.[/dim]")
+        raise typer.Exit(0)
+    table = Table(title=f"cursor rows ({len(rows)})")
+    table.add_column("guild_id", overflow="fold")
+    table.add_column("channel_id", overflow="fold")
+    table.add_column("last_message_id", overflow="fold")
+    table.add_column("updated_at")
+    for g, c, lmid, ts in rows:
+        table.add_row(g, c, lmid or "-", ts)
+    console.print(table)
     raise typer.Exit(0)
 
 

@@ -149,3 +149,50 @@ in `tests/conftest.py`. Merge-blocker floor ≥85% coverage on `session/gateway.
   fails"). Only INVALID_SESSION on a fresh IDENTIFY is treated as a hard
   error (bad token or bad fingerprint).
 
+---
+
+## 2026-04-24 — Phase 4 Discovery
+
+**Context:** 6 discovery modules + `models/discord.py` with pydantic v2 models
+for Invite/Guild/Channel/Role, sqlite-backed 7-day invite cache, `resolve` CLI
+command wired end-to-end.
+
+- **Decision (reviewer MAJOR #1 fixed inline):** 401 on `/api/v10/invites/{code}`
+  now raises `TokenInvalid` (new exception in `invite_resolve.py`). The CLI
+  `resolve` command catches it and exits 3 (detected-ban), matching the
+  exit-code contract used by `list-guilds`. Previously 401 was silently
+  logged-and-skipped, causing `resolve` to exit 0 on a banned token.
+
+- **Decision (reviewer MAJOR #2 accepted-with-documentation):** sqlite
+  SELECT-then-DELETE atomicity in `InviteCache.get()` relies on the
+  single-writer assumption (one CLI invocation at a time, enforced by the
+  gateway filelock). Module docstring now documents this; no `BEGIN IMMEDIATE`
+  needed. If P9 introduces concurrent writers we revisit.
+
+- **Decision:** `INVITE_CODE_REGEX = r"^[A-Za-z0-9-]{4,20}$"` validates codes
+  pre-network. Invalid codes never leave the tool — `resolve_invite` short-
+  circuits with a redacted-log WARNING. This is both a spec requirement and
+  a cheap anti-waste filter.
+
+- **Decision:** `load_enriched_invites` has a hard 1 MB cap. Stage 1
+  (civit-hf-scanner) output is typically < 50 KB even at full matrix; a
+  multi-MB file signals either corruption or a Stage 1 regression and should
+  fail loudly. The cap is configurable via the keyword arg for power users.
+
+- **Decision:** `intersect_with_resolved_guild_ids` is belt-and-suspenders
+  per seed-spec §2.2 — the tool only scans guilds that are in BOTH the
+  invite-resolve output AND the `/users/@me/guilds` response. Prevents a
+  malicious `invites.enriched.json` from coercing the scanner into probing
+  guilds the burner hasn't joined.
+
+- **Decision:** `SCANNABLE_CHANNEL_TYPES = frozenset({0, 5, 15})` — text,
+  announcement, forum only. Voice (2), category (4), threads (10, 11, 12)
+  are excluded from the default filter. Per-guild include/exclude overrides
+  can whitelist additional channels. Exclude always wins over include.
+
+- **Decision:** every discovery module catches `Exception` in the per-record
+  pydantic coerce loop (`# noqa: BLE001`) because "Pydantic tolerance" is a
+  claude-rules MUST — one bad upstream record should skip itself and let the
+  run continue. Reviewer flagged as MINOR (prefer narrowing to
+  `ValidationError`); accepted deferral, will be tightened in a Phase 5 polish pass.
+

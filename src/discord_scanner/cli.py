@@ -188,13 +188,80 @@ def resolve(
     ctx: typer.Context,
     invite: Annotated[str | None, typer.Option("--invite", help="Single invite code")] = None,
 ) -> None:
-    """Resolve invite codes to guild IDs (Phase 4)."""
-    _ = _require_config(ctx)
-    _ = invite
-    console.print(
-        "[yellow]not implemented:[/yellow] `resolve` is delivered in Phase 4. See workplan.md."
+    """Resolve invite codes to guild IDs + names. Uses sqlite cache (7-day TTL)."""
+    import asyncio
+
+    import httpx
+
+    from discord_scanner.discovery.invite_cache import InviteCache
+    from discord_scanner.discovery.invite_resolve import (
+        TokenInvalid,
+        load_enriched_invites,
+        resolve_invite,
     )
-    raise typer.Exit(2)
+    from discord_scanner.logging_conf import redact_invite_code
+    from discord_scanner.session.auth import (
+        PlaintextKeyringRefused,
+        TokenNotFound,
+        load_token,
+    )
+    from discord_scanner.session.rest import make_client, persist_cookies
+
+    settings = _require_config(ctx)
+
+    # Build invite-code list: --invite wins over config.
+    codes: list[str] = []
+    if invite:
+        codes = [invite]
+    else:
+        codes.extend(settings.discovery.manual_invites)
+        enriched = load_enriched_invites(settings.discovery.invites_input)
+        for rec in enriched:
+            c = rec.get("invite_code")
+            if isinstance(c, str):
+                codes.append(c)
+    codes = sorted(set(codes))
+    if not codes:
+        console.print("[yellow]no invite codes to resolve.[/yellow]")
+        raise typer.Exit(0)
+
+    try:
+        token, _source = load_token(settings)
+    except (PlaintextKeyringRefused, TokenNotFound) as e:
+        console.print(f"[red]token error:[/red] {e}")
+        raise typer.Exit(1) from e
+
+    async def _run() -> int:
+        client = make_client(settings, token)
+        cache = InviteCache(settings.run.state_root)
+        try:
+            n_ok = 0
+            for code in codes:
+                resolved = await resolve_invite(client, code, cache=cache)
+                if resolved and resolved.guild_id:
+                    console.print(
+                        f"  {redact_invite_code(code)}  {resolved.guild_id}  "
+                        f"{resolved.guild_name or '<no name>'}"
+                    )
+                    n_ok += 1
+                else:
+                    console.print(f"  {redact_invite_code(code)}  (not resolved)")
+            console.print(f"[green]ok[/green] {n_ok}/{len(codes)} resolved.")
+            return 0
+        finally:
+            cache.close()
+            await client.aclose()
+            persist_cookies(client, settings)
+
+    try:
+        exit_code = asyncio.run(_run())
+    except TokenInvalid as e:
+        console.print(f"[red]401 Unauthorized:[/red] {e}")
+        raise typer.Exit(3) from e
+    except httpx.HTTPError as e:
+        console.print(f"[red]http error:[/red] {e}")
+        raise typer.Exit(2) from e
+    raise typer.Exit(exit_code)
 
 
 @app.command(name="list-guilds")

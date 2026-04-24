@@ -259,11 +259,14 @@ Phase 0 is DONE when ALL of the following are true:
 
 ---
 
-## Phase 4 — Discovery (Invite Resolve + Guild + Channel Enumeration)
+## Phase 4 — Discovery (Invite Resolve + Guild + Channel Enumeration) ✅
 
 > **Purpose**: Implement `discord-scanner resolve`, guild enumeration, channel listing, role fetch. Feed resolved data into Phase 5 cursor lookup.
 
-**Status**: `[ ] Not started`
+**Status**: `[x] ✅ DONE` (2026-04-24)
+**SEC-P0 cleared this phase**: none new (consumes + validates P2/P3 SEC items; asserts no write verbs, no members enumeration, parameterised SQL, invite-code redaction).
+**Coverage**: `discovery/invite_resolve.py` 95%, `invite_cache.py` 94%, `guilds.py` 90%, `channels.py` 87%, `forums.py` 79%, `roles.py` 75%, `models/discord.py` 100%. All above 70% floor.
+**Code-review (Opus)**: 0 BLOCKING, 2 MAJOR (both fixed inline — 401 on resolve now propagates as TokenInvalid → CLI exit 3; single-writer sqlite atomicity documented in invite_cache docstring), 5 MINOR.
 **Depends on**: Phase 3 `✅ DONE`
 **Parallel with**: Test Track
 

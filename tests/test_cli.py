@@ -47,9 +47,66 @@ def test_version_exits_zero() -> None:
     assert "python" in result.stdout
 
 
-def test_resolve_not_implemented_returns_exit_2(tmp_config_yaml: Path) -> None:
+def test_resolve_without_token_exits_one(tmp_config_yaml: Path, mock_keyring: MagicMock) -> None:
+    """P4 wiring: `resolve` with no token → exit 1."""
+    # Need an invite to avoid the 'no codes' exit-0 branch
+    result = runner.invoke(
+        app, ["--config", str(tmp_config_yaml), "resolve", "--invite", "aBcD1234"]
+    )
+    assert result.exit_code == 1
+    assert "token" in result.stdout.lower()
+
+
+def test_resolve_no_invites_exits_zero(tmp_config_yaml: Path, mock_keyring: MagicMock) -> None:
+    """P4 wiring: `resolve` with no invites configured prints a message + exit 0."""
     result = runner.invoke(app, ["--config", str(tmp_config_yaml), "resolve"])
-    assert result.exit_code == 2
+    assert result.exit_code == 0
+    assert "no invite codes" in result.stdout.lower()
+
+
+def test_resolve_single_invite_happy_path(
+    tmp_config_yaml: Path,
+    mock_keyring: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P4 wiring: `resolve --invite aBcD1234` with respx-mocked 200 → exit 0."""
+    import httpx
+    import respx
+
+    monkeypatch.setenv("DISCORD_TOKEN", "TOK_FOR_TEST")
+    with respx.mock() as mock:
+        mock.get(
+            "https://discord.com/api/v10/invites/aBcD1234?with_counts=true&with_expiration=true"
+        ).mock(
+            return_value=httpx.Response(
+                200, json={"code": "aBcD1234", "guild": {"id": "999", "name": "X"}}
+            )
+        )
+        result = runner.invoke(
+            app, ["--config", str(tmp_config_yaml), "resolve", "--invite", "aBcD1234"]
+        )
+    assert result.exit_code == 0
+    assert "999" in result.stdout
+
+
+def test_resolve_401_exits_three(
+    tmp_config_yaml: Path,
+    mock_keyring: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reviewer MAJOR: 401 on `resolve` exits 3 (detected-ban), not 0."""
+    import httpx
+    import respx
+
+    monkeypatch.setenv("DISCORD_TOKEN", "TOK_FOR_TEST")
+    with respx.mock() as mock:
+        mock.get(
+            "https://discord.com/api/v10/invites/aBcD1234?with_counts=true&with_expiration=true"
+        ).mock(return_value=httpx.Response(401, json={"message": "Unauthorized"}))
+        result = runner.invoke(
+            app, ["--config", str(tmp_config_yaml), "resolve", "--invite", "aBcD1234"]
+        )
+    assert result.exit_code == 3
 
 
 def test_list_guilds_without_token_exits_one(

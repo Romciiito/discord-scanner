@@ -86,10 +86,16 @@ class Message(BaseModel):
     ) -> Message:
         """Coerce a raw Discord message dict into a Stage 2 `Message` record.
 
-        Safe against missing fields — raises `pydantic.ValidationError` only
-        if `id`, `author`, or `timestamp` are absent (hard contract).
+        Raises `ValueError` with a stable message tag when the hard-contract
+        fields `id`, `author.id`, or `timestamp` are missing — the fetch-layer
+        caller (P9) catches this, emits a WARNING, and skips the record rather
+        than writing a garbage row with empty author fields.
         """
-        author = raw.get("author") or {}
+        mid = raw.get("id")
+        author = raw.get("author")
+        timestamp = raw.get("timestamp")
+        if not mid or not isinstance(author, dict) or not author.get("id") or not timestamp:
+            raise ValueError("message_missing_required_fields")
         attachments_raw = raw.get("attachments") or []
         reactions_raw = raw.get("reactions") or []
         ref = raw.get("message_reference") or {}
@@ -140,12 +146,12 @@ class Message(BaseModel):
             channel_name=channel_name,
             channel_type=channel_type,
             parent_channel_id=parent_channel_id,
-            message_id=str(raw.get("id") or ""),
-            author_id=str(author.get("id") or ""),
+            message_id=str(mid),
+            author_id=str(author["id"]),
             author_name=str(author.get("username") or author.get("global_name") or ""),
             author_discriminator=author.get("discriminator"),
             content=str(raw.get("content") or ""),
-            timestamp=str(raw.get("timestamp") or ""),
+            timestamp=str(timestamp),
             edited_timestamp=raw.get("edited_timestamp"),
             reactions=reactions,
             attachments=attachments,

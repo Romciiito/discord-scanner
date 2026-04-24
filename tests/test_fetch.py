@@ -75,6 +75,38 @@ def test_message_from_api_tolerates_missing_optional_fields() -> None:
     assert m.mentions.users == []
 
 
+def test_message_from_api_raises_on_missing_author() -> None:
+    """Reviewer MAJOR: missing `author` must raise, not silently emit empty fields."""
+    raw = {"id": "111", "timestamp": "2026-04-24T00:00:00+00:00", "content": "hi"}
+    with pytest.raises(ValueError, match="message_missing_required_fields"):
+        Message.from_api(raw, guild_id="g", channel_id="c")
+
+
+def test_message_from_api_raises_on_missing_id() -> None:
+    raw = {
+        "author": {"id": "u1", "username": "alice"},
+        "timestamp": "2026-04-24T00:00:00+00:00",
+    }
+    with pytest.raises(ValueError, match="message_missing_required_fields"):
+        Message.from_api(raw, guild_id="g", channel_id="c")
+
+
+def test_message_from_api_raises_on_missing_timestamp() -> None:
+    raw = {"id": "111", "author": {"id": "u1", "username": "alice"}}
+    with pytest.raises(ValueError, match="message_missing_required_fields"):
+        Message.from_api(raw, guild_id="g", channel_id="c")
+
+
+def test_message_from_api_raises_on_author_without_id() -> None:
+    raw = {
+        "id": "111",
+        "author": {"username": "alice"},  # no id
+        "timestamp": "2026-04-24T00:00:00+00:00",
+    }
+    with pytest.raises(ValueError, match="message_missing_required_fields"):
+        Message.from_api(raw, guild_id="g", channel_id="c")
+
+
 def test_message_from_api_skips_malformed_attachment() -> None:
     raw = {
         "id": "333",
@@ -103,6 +135,34 @@ def test_reaction_model_tolerates_extras() -> None:
 # ----------------------------------------------------------------------
 # fetch_channel_messages — pagination + end-of-channel detection
 # ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_fetch_messages_sorts_by_numeric_snowflake(
+    tmp_config_yaml: Path,
+) -> None:
+    """Reviewer MINOR: mixed-length snowflake strings sort numerically,
+    not lexicographically."""
+    cfg = load_config(tmp_config_yaml)
+    cfg.http.per_channel_delay_sec = (0.001, 0.002)
+    batch = [
+        {"id": "1200000000000000000"},  # 19-digit, numerically biggest
+        {"id": "99999999999999999"},  # 17-digit, numerically smallest
+        {"id": "100000000000000000"},  # 18-digit, middle
+    ]
+    async with httpx.AsyncClient() as client, respx.mock() as mock:
+        mock.get("https://discord.com/api/v10/channels/c1/messages").mock(
+            side_effect=[
+                httpx.Response(200, json=batch),
+                httpx.Response(200, json=[]),
+            ]
+        )
+        ids = [m["id"] async for m in fetch_channel_messages(client, "c1", settings=cfg)]
+    assert ids == [
+        "99999999999999999",
+        "100000000000000000",
+        "1200000000000000000",
+    ]
 
 
 @pytest.mark.asyncio

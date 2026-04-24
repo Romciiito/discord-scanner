@@ -48,7 +48,14 @@ async def fetch_channel_pinned(
     if not isinstance(batch, list):
         logger.warning("pinned_non_list_response", channel_id=channel_id)
         return
-    # Deterministic order: oldest → newest.
-    batch.sort(key=lambda m: m.get("id", ""))
+
+    # Deterministic numeric-snowflake order (oldest → newest).
+    def _key(m: dict[str, Any]) -> int:
+        mid = m.get("id")
+        if isinstance(mid, str) and mid.isdigit():
+            return int(mid)
+        return -1
+
+    batch.sort(key=_key)
     for msg in batch:
         yield msg

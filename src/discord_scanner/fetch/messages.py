@@ -32,6 +32,14 @@ logger = get_logger(__name__)
 DEFAULT_PAGE_SIZE: Final[int] = 100
 
 
+def _snowflake_key(msg: dict[str, Any]) -> int:
+    """Sort key: integer snowflake id, or -1 for malformed records (sorted first)."""
+    mid = msg.get("id")
+    if isinstance(mid, str) and mid.isdigit():
+        return int(mid)
+    return -1
+
+
 async def fetch_channel_messages(
     client: httpx.AsyncClient,
     channel_id: str,
@@ -96,11 +104,11 @@ async def fetch_channel_messages(
             logger.debug("messages_end_of_channel", channel_id=channel_id)
             return
 
-        # Discord returns messages NEWEST-first by default. For forward
-        # pagination with `after=<id>`, responses come oldest→newest within
-        # the page but we still sort defensively by `id` (string id sort ==
-        # timestamp sort for snowflakes).
-        batch.sort(key=lambda m: m.get("id", ""))
+        # Discord returns messages NEWEST-first by default. Sort defensively
+        # by NUMERIC snowflake value so `last_seen` is always the newest id
+        # in the page. String-sort would break on mixed 17-/18-digit snowflakes
+        # (pre-2015 vs post-2015 messages); numeric sort is always correct.
+        batch.sort(key=_snowflake_key)
 
         for msg in batch:
             if emitted >= cap:

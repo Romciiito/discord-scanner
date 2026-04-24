@@ -20,9 +20,7 @@ _INVITE_PATTERN = re.compile(
     r"(?:discord\.gg/|discord\.com/invite/)([A-Za-z0-9-]{4,20})",
     re.IGNORECASE,
 )
-_TOKEN_PATTERN = re.compile(
-    r"\b[A-Za-z0-9_-]{24,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{27,}\b"
-)
+_TOKEN_PATTERN = re.compile(r"\b[A-Za-z0-9_-]{24,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{27,}\b")
 
 
 def redact_token(token: str) -> str:
@@ -50,9 +48,7 @@ def redact_invite_code(code: str) -> str:
 
 def _redact_string(value: str) -> str:
     """Apply both invite-URL and token redaction to a free-text string."""
-    value = _INVITE_PATTERN.sub(
-        lambda m: f"discord.gg/{redact_invite_code(m.group(1))}", value
-    )
+    value = _INVITE_PATTERN.sub(lambda m: f"discord.gg/{redact_invite_code(m.group(1))}", value)
     value = _TOKEN_PATTERN.sub(lambda m: redact_token(m.group(0)), value)
     return value
 
@@ -77,9 +73,7 @@ def configure_logging(level: str = "info", json_output: bool = True) -> None:
     MUST be called once at CLI entry before any log emission.
     """
     renderer: Any = (
-        structlog.processors.JSONRenderer()
-        if json_output
-        else structlog.dev.ConsoleRenderer()
+        structlog.processors.JSONRenderer() if json_output else structlog.dev.ConsoleRenderer()
     )
     structlog.configure(
         processors=[
@@ -89,9 +83,7 @@ def configure_logging(level: str = "info", json_output: bool = True) -> None:
             _redact_processor,
             renderer,
         ],
-        wrapper_class=structlog.make_filtering_bound_logger(
-            _level_to_int(level)
-        ),
+        wrapper_class=structlog.make_filtering_bound_logger(_level_to_int(level)),
         cache_logger_on_first_use=True,
     )
 

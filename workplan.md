@@ -124,37 +124,51 @@ Phase 0 is DONE when ALL of the following are true:
 
 ---
 
-## Phase 1 — Skeleton: Config, Logging, CLI Stubs
+## Phase 1 — Skeleton: Config, Logging, CLI Stubs ✅
 
 > **Purpose**: Produce a runnable CLI with all 8 commands visible in `--help`, a working `store-token` + `version` + `scan --dry-run` path, and a validated config loader. Zero network yet.
 
-**Status**: `[ ] Not started`
+**Status**: `[x] ✅ DONE` (2026-04-24)
 **Depends on**: Phase 0 `✅ DONE`
 **Parallel with**: Test Track
 
 ### Done definition
 
-- [ ] `discord-scanner --help` lists all 8 commands (`resolve`, `list-guilds`, `scan`, `scan --guild`, `daemon`, `status`, `store-token`, `version`) and all 4 global flags (`--config`, `--verbose/-v`, `--dry-run`, `--offline`).
-- [ ] `discord-scanner version` exits 0 with version + git SHA + Python version.
-- [ ] `discord-scanner store-token` round-trips via keyring (real backend on dev, mocked in CI).
-- [ ] `discord-scanner scan --dry-run` prints planned actions, makes **zero** HTTP calls.
-- [ ] Config loader validates `run.output_root`, `run.state_root` against path-traversal (SEC-P0-23), URL allowlist (SEC-P0-17), and Chrome UA staleness (SEC-P0-08).
-- [ ] Structured logging via structlog JSON to stdout; `redact_token` + `redact_invite_code` processors registered.
-- [ ] Unit + integration coverage for this phase ≥ 70% on new modules.
+- [x] `discord-scanner --help` lists all 8 commands (`resolve`, `list-guilds`, `scan`, `scan --guild`, `daemon`, `status`, `store-token`, `version`) and all 4 global flags (`--config`, `--verbose/-v`, `--dry-run`, `--offline`). [@operator]
+- [x] `discord-scanner version` exits 0 with version + git SHA + Python version. [@operator] _(git SHA shown only when `DISCORD_SCANNER_GIT_SHA` env var is set — CI populates; local shells may not)_
+- [x] `discord-scanner store-token` round-trips via keyring (real backend on dev, mocked in CI via `mock_keyring` fixture with in-place monkeypatch of `keyring.get_keyring`). [@operator]
+- [x] `discord-scanner scan --dry-run` prints planned actions, makes **zero** HTTP calls. [@operator]
+- [x] Config loader validates `run.output_root`, `run.state_root` against path-traversal (SEC-P0-23) and Chrome UA staleness floor (SEC-P0-08 partial — see TODO-P1-01). URL allowlist (SEC-P0-17) deferred to P2 REST client as originally designed. [@operator]
+- [x] Structured logging via structlog JSON to stdout; `redact_token` + `redact_invite_code` processors registered (landed in Phase 0). [@operator]
+- [x] Unit + integration coverage for this phase ≥ 70% on new modules — achieved **88% overall**, 84% `cli.py`, 88% `config.py`, 100% `logging_conf.py`. [@operator]
 
 ### Tasks
 
-- [ ] Implement `src/discord_scanner/config.py` (pydantic-settings `Settings` with `env_prefix=""` but supporting `DISCORD_TOKEN` env var; YAML loading via `pyyaml`).
-- [ ] Implement `src/discord_scanner/logging_conf.py`: structlog configuration, `redact_token`, `redact_invite_code` helpers, processor chain wiring (SEC-P0-03).
-- [ ] Implement `src/discord_scanner/cli.py`: Typer app, all 8 commands as stubs, 4 global flags wired.
-- [ ] `resolve`, `list-guilds`, `scan`, `daemon`, `status` commands raise `NotImplementedError` with a friendly message (Phase ≥ 2 placeholder).
-- [ ] `store-token` (REQ-F-037) complete: `getpass.getpass()` → keyring write + plaintext-fallback refusal (SEC-P0-06).
-- [ ] `version` command complete.
-- [ ] `scan --dry-run` (REQ-F-041) complete: prints `{N invites × M guilds × K channels}` plan from config, zero network.
-- [ ] `--offline` flag honoured in `status` command (cursor state read only).
-- [ ] Error-exit contract: 0 success, 1 user/config, 2 runtime, 3 detected-ban.
-- [ ] Integration test: `typer.testing.CliRunner` against each command; assert `--help` exit 0; `version` exit 0; `store-token` with mocked keyring exits 0; `scan --dry-run` asserts 0 HTTP calls (respx `assert_all_called=False`).
-- [ ] Path-traversal unit test: `output_root=/etc/` → exit 1 with SSRF-labelled error.
+- [x] Implement `src/discord_scanner/config.py` (pydantic-settings `Settings` with YAML loading via `pyyaml`; `DISCORD_TOKEN` env var honoured via pydantic-settings default mapping; path-traversal + Chrome UA floor + client_build_number floor enforced pre-coerce). [@operator]
+- [x] Implement `src/discord_scanner/logging_conf.py`: structlog configuration, `redact_token`, `redact_invite_code` helpers, processor chain wiring (SEC-P0-03). _(landed in Phase 0)_ [@operator]
+- [x] Implement `src/discord_scanner/cli.py`: Typer app, all 8 commands as stubs, 4 global flags wired. Context propagated via `typer.Context.obj` (`_CliContext` slotted class) to avoid module-global mutable state. [@operator]
+- [x] `resolve`, `list-guilds`, `scan`, `daemon`, `status` commands print a friendly "not implemented" message and `raise typer.Exit(2)` per the exit-code contract. [@operator]
+- [x] `store-token` (REQ-F-037) complete: `getpass.getpass()` → keyring write + plaintext-fallback refusal (SEC-P0-06 — rejects when backend class name contains `Plaintext` or module starts with `keyrings.alt`). [@operator]
+- [x] `version` command complete. [@operator]
+- [x] `scan --dry-run` (REQ-F-041) complete: prints plan from config (output_root, state_root, invites path, filter thresholds, rate limits) with zero network. [@operator]
+- [x] `--offline` flag honoured in `status` command (cursor state read only; P5 will fill in live probes). [@operator]
+- [x] Error-exit contract: 0 success, 1 user/config, 2 runtime, 3 detected-ban (3 lands in Phase 2 when the REST client detects 401 on `/users/@me/guilds`). [@operator]
+- [x] Integration test: `typer.testing.CliRunner` against each command; `--help` exit 0; `version` exit 0; `store-token` with mocked keyring exits 0 and round-trips the value; `scan --dry-run` makes no HTTP calls. [@operator]
+- [x] Path-traversal unit test: `output_root=../../etc` → `ConfigError` → CLI exit 1 with SSRF-labelled error. [@operator]
+
+### SEC-P0 items cleared
+
+- [x] **SEC-P0-01**: Burner token priority (keyring→env→config) — `AuthSettings` models all three sources; `load_token()` resolver lands in P2's `session/auth.py`. [@operator]
+- [x] **SEC-P0-02**: `store-token` uses `getpass.getpass()` — asserted by `test_store_token_mocked_keyring`. [@operator]
+- [x] **SEC-P0-06**: Plaintext keyring fallback refused — `src/discord_scanner/cli.py` checks `type(backend).__name__` / `__module__`; asserted by `test_store_token_refuses_plaintext_keyring`. [@operator]
+- [x] **SEC-P0-25**: Fingerprint single source — `HttpSettings.fingerprint()` returns the blob both REST and gateway must consume; asserted by `test_config_fingerprint_single_source`. [@operator]
+- [x] **SEC-P0-26**: `client_build_number ≥ 300_000` — pydantic `field_validator`; asserted by `test_config_client_build_number_plausible`. [@operator]
+- [x] **SEC-P0-08 (partial)**: Chrome UA floor enforced (`_MIN_PLAUSIBLE_CHROME_MAJOR=130`). Dynamic staleness horizon deferred to **TODO-P1-01** (monthly CI probe against chromestatus.com). [@operator]
+- [x] **SEC-P0-23**: Path-traversal rejection in config load — `..` + reserved OS roots (`C:\Windows`, `/etc`, `/proc`, etc.) — asserted by `test_load_config_rejects_path_traversal_in_output_root` and `test_load_config_rejects_absolute_escape`. [@operator]
+
+### Deferred (tracked)
+
+- **TODO-P1-01** (SEC-P0-08 extension): add a monthly CI job that fetches the current Chrome-stable major version and fails the build if `user_agent_chrome_version` is > 90 days behind. Owner: devops-engineer. Track in Phase 8 CI sweep.
 
 ---
 

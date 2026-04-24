@@ -95,9 +95,7 @@ def test_no_raw_discord_invite_url_in_log_call() -> None:
     assert not offenders, f"raw invite URL in log call in: {offenders}"
 
 
-DISCORD_TOKEN_PATTERN = re.compile(
-    r"\b[A-Za-z0-9_-]{24,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{27,}\b"
-)
+DISCORD_TOKEN_PATTERN = re.compile(r"\b[A-Za-z0-9_-]{24,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{27,}\b")
 
 
 def test_no_raw_discord_token_pattern() -> None:

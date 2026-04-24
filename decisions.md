@@ -95,3 +95,57 @@ to every subcommand.
   — tracked as TODO-P2-01. Owner: devops-engineer. Lands during Phase 8 CI sweep,
   once the full dependency footprint is stable across all 9 phases.
 
+---
+
+## 2026-04-24 — Phase 3 Gateway Dormant Session
+
+**Context:** single-file FSM (~400 LOC) plus hand-rolled `FakeWebSocket` mock
+in `tests/conftest.py`. Merge-blocker floor ≥85% coverage on `session/gateway.py`.
+
+- **Decision:** `IDENTIFY.properties` is the **exact** dict returned by
+  `settings.http.fingerprint()` — no parallel fingerprint blob, no re-derivation.
+  REST `X-Super-Properties` base64-decodes to the same dict. Parity is verified
+  two ways: (a) `test_identify_properties_equal_rest_xsp_dict` compares dicts,
+  (b) `test_identify_properties_byte_stable_via_shared_kwargs` compares bytes
+  after serializing with the shared `XSP_JSON_KWARGS` constant (exported from
+  `session/headers.py` — TODO-P3-01 closed).
+
+- **Decision:** the outer `IDENTIFY` frame is serialized with Python-default
+  `json.dumps` (spaces after separators). Only the **inner `properties` payload**
+  needs byte parity with REST XSP because that's what Discord fingerprints.
+  Frame-level whitespace is not part of the protocol fingerprint.
+
+- **Decision (reviewer-flagged MAJOR, fixed inline):** `reconnect_with_resume`
+  cancels the live heartbeat task BEFORE opening the new WS, otherwise
+  `_do_handshake` spawns a second heartbeat loop and OPCODE 1 rate doubles —
+  a real detectability signal. Regression test
+  `test_reconnect_cancels_old_heartbeat_task` plants a never-finishing task,
+  calls reconnect, asserts the old task is `done()` and the new one is different.
+
+- **Decision:** `FileLock(state/gateway-{keyring_username}.lock, timeout=0)`
+  is acquired + `os.chmod(0o600)` best-effort immediately. Windows only sets
+  the read-only bit (documented in docs/claude/development.md §PII).
+  `GatewayConcurrencyError` maps to CLI exit 1.
+
+- **Decision:** `self._ws: Any | None` — duck-typed so `FakeWebSocket` and the
+  real `websockets.connect(GATEWAY_URL)` both fit. Acceptable because the
+  websockets API is stable + pinned `>=13` and the real WS is only touched
+  through `recv / send / close`. Reviewer flagged as MINOR; accepted.
+
+- **Decision:** migrated from deprecated `websockets.client.connect` to the
+  top-level `websockets.connect` API (websockets 16 deprecation). mypy was
+  correct to flag; fix was a one-import change.
+
+- **Decision:** heartbeat loop uses
+  `await asyncio.wait_for(self._shutdown.wait(), timeout=interval * jitter)`
+  instead of `asyncio.sleep` because shutdown must interrupt the sleep
+  immediately. Loop exits cleanly on `self._shutdown.set()` and the `TimeoutError`
+  from `wait_for` is the "keep looping" signal. No `time.sleep` anywhere
+  (CI grep enforces).
+
+- **Decision:** `OP_INVALID_SESSION` on a RESUME attempt does NOT raise —
+  instead we fall through to a fresh IDENTIFY (seed-spec §2.5 "On disconnect:
+  try RESUME with session_id + sequence; fall back to fresh IDENTIFY if resume
+  fails"). Only INVALID_SESSION on a fresh IDENTIFY is treated as a hard
+  error (bad token or bad fingerprint).
+

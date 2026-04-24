@@ -16,11 +16,20 @@ from __future__ import annotations
 
 import base64
 import json
-from typing import Final
+from typing import Any, Final
 
 from pydantic import SecretStr
 
 from discord_scanner.config import Settings
+
+# Shared `json.dumps(...)` kwargs used by BOTH the REST `X-Super-Properties`
+# header builder AND the gateway OPCODE 2 IDENTIFY `properties` serializer
+# (P3). Keeping the kwargs in one place is a prerequisite for the
+# byte-for-byte parity test enforced by `test_gateway.py` — SEC-P0-25.
+XSP_JSON_KWARGS: Final[dict[str, Any]] = {
+    "separators": (",", ":"),
+    "ensure_ascii": False,
+}
 
 # The 17 REST headers from seed-spec §4.1. Every key in this set MUST be
 # present (non-empty) on every outbound REST request.
@@ -48,11 +57,12 @@ REQUIRED_HEADER_KEYS: Final[tuple[str, ...]] = (
 def build_x_super_properties(settings: Settings) -> str:
     """Base64-encoded JSON blob consumed by both REST headers and gateway IDENTIFY.
 
-    The JSON is compact (separators=(",", ":")) + key order is stable (matches
-    `fingerprint()` dict insertion) so REST and gateway are byte-for-byte equal.
+    The JSON is compact + key order is stable (matches `fingerprint()` dict
+    insertion) so REST and gateway are byte-for-byte equal. Shared kwargs
+    are in `XSP_JSON_KWARGS` — both call sites must use them.
     """
     fp = settings.http.fingerprint()
-    raw = json.dumps(fp, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    raw = json.dumps(fp, **XSP_JSON_KWARGS).encode("utf-8")
     return base64.b64encode(raw).decode("ascii")
 
 

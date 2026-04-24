@@ -218,11 +218,14 @@ Phase 0 is DONE when ALL of the following are true:
 
 ---
 
-## Phase 3 — Gateway Dormant Session
+## Phase 3 — Gateway Dormant Session ✅
 
 > **Purpose**: Open and hold a WebSocket gateway session with byte-for-byte fingerprint match to REST, heartbeat discipline, dormant presence, and OPCODE 6 RESUME on disconnect.
 
-**Status**: `[ ] Not started`
+**Status**: `[x] ✅ DONE` (2026-04-24)
+**SEC-P0 cleared this phase**: 10 (IDENTIFY=XSP dict parity + byte-stable), 13 (filelock), 25 (fingerprint single source, reinforced), 26 (build_number floor verified in IDENTIFY payload).
+**Coverage**: overall 89.36%, `session/gateway.py` = **92%** (≥85% merge-blocker floor).
+**Code-review (Opus)**: 0 BLOCKING, 1 MAJOR (fixed inline — reconnect_with_resume was leaking heartbeat tasks → double rate), 5 MINOR (chmod 0o600 on lock file addressed; others tracked).
 **Depends on**: Phase 2 `✅ DONE`
 **Parallel with**: Test Track (`test_gateway.py` must reach ≥85% coverage on `session/gateway.py`)
 

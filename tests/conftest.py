@@ -127,3 +127,55 @@ def _no_real_env(monkeypatch: pytest.MonkeyPatch) -> None:
     # Guard: never leak real home-dir .env into tests
     monkeypatch.setenv("DISCORD_SCANNER_TEST_MODE", "1")
     assert os.environ.get("DISCORD_SCANNER_TEST_MODE") == "1"
+
+
+# ----------------------------------------------------------------------
+# Gateway WebSocket mock (hand-rolled — no pytest-websocket dependency).
+# Traces to: workplan.md P0 TEST-P0-01 gateway_ws_mock, P3 tests.
+# ----------------------------------------------------------------------
+
+
+class FakeWebSocket:
+    """In-memory substitute for `websockets.client.WebSocketClientProtocol`.
+
+    Provides:
+    - `recv()` pops the next scripted server message (awaits if none ready)
+    - `send(payload)` captures the payload to `self.sent`
+    - `close()` marks the socket closed; further `recv` raises StopAsyncIteration
+
+    Use `FakeWebSocket.script([...])` to pre-load a queue of server messages
+    (each either a JSON-serialisable dict or a raw `str`).
+    """
+
+    def __init__(self) -> None:
+        import asyncio as _asyncio
+
+        self._queue: _asyncio.Queue[str] = _asyncio.Queue()
+        self.sent: list[str] = []
+        self._closed = False
+
+    def script(self, messages: list[dict | str]) -> None:
+        import json as _json
+
+        for m in messages:
+            payload = m if isinstance(m, str) else _json.dumps(m)
+            self._queue.put_nowait(payload)
+
+    async def recv(self) -> str:
+        if self._closed:
+            raise StopAsyncIteration("fake ws closed")
+        return await self._queue.get()
+
+    async def send(self, data: str) -> None:
+        if self._closed:
+            raise RuntimeError("send on closed fake ws")
+        self.sent.append(data)
+
+    async def close(self) -> None:
+        self._closed = True
+
+
+@pytest.fixture()
+def fake_ws() -> FakeWebSocket:
+    """A single hand-rolled FakeWebSocket per test — script it with `fake_ws.script(...)`."""
+    return FakeWebSocket()

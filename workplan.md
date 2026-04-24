@@ -371,7 +371,13 @@ Phase 0 is DONE when ALL of the following are true:
 
 ---
 
-## Phase 7 — Attachments (Image Download + MIME Sniff + Size Cap)
+## Phase 7 — Attachments (Image Download + MIME Sniff + Size Cap) ✅
+
+**Status**: `[x] ✅ DONE` (2026-04-24)
+**SEC-P0 cleared**: 19 (MIME sniff), 20 (size cap + partial delete), 21 (filename + realpath), 22 (complete).
+**Coverage**: mime.py 100%, filename.py 86%, attachments.py 77%.
+**Follow-up fix (reviewer Opus): size-cap check on the first chunk when the stream delivers everything at once (prevented a bypass).**
+
 
 > **Purpose**: Stream-download image attachments from Discord CDN with full security (MIME sniff, size cap, filename sanitisation, symlink rejection).
 

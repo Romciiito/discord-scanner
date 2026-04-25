@@ -1,0 +1,177 @@
+name: Chrome UA staleness probe
+
+# Closes TODO-P1-01 (SEC-P0-08 dynamic horizon). The compiled-in floor in
+# src/discord_scanner/config.py only catches absurdly stale UAs at config-load.
+# This monthly probe checks the configured Chrome major against the live
+# Chrome stable channel and opens an auto-PR if the gap is > 3 minor versions.
+#
+# Source-of-truth: chromiumdash.appspot.com (see decisions.md 2026-04-25).
+# `platform=Windows` matches config.http.fake_os_platform default.
+
+on:
+  schedule:
+    # 1st of each month, 00:00 UTC.
+    - cron: "0 0 1 * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "If true, do not open the auto-PR; only post a workflow summary."
+        required: false
+        default: "false"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  probe:
+    name: Probe Chrome stable major + open auto-PR if stale
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read configured Chrome major
+        id: configured
+        run: |
+          # Source-of-truth lives in pyproject.toml NOWHERE (it's a runtime
+          # config default). We grep the constant from config.py directly.
+          configured_full=$(grep -E '^\s+user_agent_chrome_version:\s*str\s*=\s*"' src/discord_scanner/config.py \
+            | sed -E 's/.*= "([^"]+)".*/\1/' | head -n1)
+          if [ -z "$configured_full" ]; then
+            echo "::error::Could not find user_agent_chrome_version default in src/discord_scanner/config.py"
+            exit 1
+          fi
+          configured_major=$(echo "$configured_full" | cut -d. -f1)
+          echo "full=$configured_full" >> "$GITHUB_OUTPUT"
+          echo "major=$configured_major" >> "$GITHUB_OUTPUT"
+          echo "Configured: $configured_full (major $configured_major)"
+
+      - name: Probe Chrome stable major (chromiumdash)
+        id: live
+        run: |
+          set -euo pipefail
+          # Single retry with a short backoff — chromiumdash is generally
+          # reliable but we don't want one bad fetch to noise-up the cron.
+          fetch() {
+            curl -sS --fail --max-time 15 \
+              "https://chromiumdash.appspot.com/fetch_releases?channel=Stable&platform=Windows"
+          }
+          payload=$(fetch || (sleep 5 && fetch))
+          live_full=$(echo "$payload" | jq -r '.[0].version // empty')
+          if [ -z "$live_full" ] || [ "$live_full" = "null" ]; then
+            echo "::warning::chromiumdash returned no version; skipping probe (informational only)"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          live_major=$(echo "$live_full" | cut -d. -f1)
+          echo "full=$live_full" >> "$GITHUB_OUTPUT"
+          echo "major=$live_major" >> "$GITHUB_OUTPUT"
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          echo "Live:       $live_full (major $live_major)"
+
+      - name: Compare majors and decide
+        if: steps.live.outputs.skip != 'true'
+        id: decide
+        run: |
+          configured_major=${{ steps.configured.outputs.major }}
+          live_major=${{ steps.live.outputs.major }}
+          gap=$((live_major - configured_major))
+          echo "Major gap: live - configured = $gap"
+          # Heuristic proxy for the SEC-P0-08 90-day horizon: Chrome stable
+          # ships ~every 4 weeks, so a 3+ major gap implies > 12 weeks stale.
+          if [ "$gap" -ge 3 ]; then
+            echo "stale=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "stale=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "gap=$gap" >> "$GITHUB_OUTPUT"
+
+      - name: Summarise probe (always)
+        if: steps.live.outputs.skip != 'true'
+        run: |
+          {
+            echo "## Chrome UA staleness probe"
+            echo ""
+            echo "- Configured: \`${{ steps.configured.outputs.full }}\` (major ${{ steps.configured.outputs.major }})"
+            echo "- Live:       \`${{ steps.live.outputs.full }}\` (major ${{ steps.live.outputs.major }})"
+            echo "- Gap:        ${{ steps.decide.outputs.gap }}"
+            echo "- Stale?:     ${{ steps.decide.outputs.stale }}"
+            echo ""
+            echo "Source: <https://chromiumdash.appspot.com/fetch_releases?channel=Stable&platform=Windows>"
+            echo ""
+            echo "Threshold: gap >= 3 (Chrome ships ~4-week cadence; 3 majors ≈ 90-day SEC-P0-08 horizon)."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Bump user_agent_chrome_version (auto-PR)
+        if: |
+          steps.live.outputs.skip != 'true' &&
+          steps.decide.outputs.stale == 'true' &&
+          inputs.dry_run != 'true'
+        env:
+          LIVE_FULL: ${{ steps.live.outputs.full }}
+        run: |
+          set -euo pipefail
+          # In-place bump of the default in config.py. The live version is
+          # passed via env (LIVE_FULL) so the heredoc is single-quoted and
+          # not subject to shell substitution; safer than $-interpolation.
+          python3 - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          live_full = os.environ["LIVE_FULL"]
+          p = Path("src/discord_scanner/config.py")
+          src = p.read_text(encoding="utf-8")
+          new = re.sub(
+              r'(user_agent_chrome_version:\s*str\s*=\s*")([^"]+)(")',
+              lambda m: f"{m.group(1)}{live_full}{m.group(3)}",
+              src,
+              count=1,
+          )
+          if new == src:
+              raise SystemExit(
+                  "regex did not match — config.py shape changed; update the probe"
+              )
+          p.write_text(new, encoding="utf-8")
+          PY
+          # Show diff in logs for forensic visibility.
+          git diff src/discord_scanner/config.py || true
+
+      - name: Open auto-PR
+        if: |
+          steps.live.outputs.skip != 'true' &&
+          steps.decide.outputs.stale == 'true' &&
+          inputs.dry_run != 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          commit-message: |
+            chore(deps): bump default Chrome UA major from ${{ steps.configured.outputs.major }} to ${{ steps.live.outputs.major }} (TODO-P1-01)
+
+            Auto-detected by .github/workflows/chrome-ua-probe.yml — current
+            stable channel is ${{ steps.live.outputs.full }} per chromiumdash.
+
+            Source: https://chromiumdash.appspot.com/fetch_releases?channel=Stable&platform=Windows
+          branch: chore/chrome-ua-bump-${{ steps.live.outputs.major }}
+          delete-branch: true
+          title: "chore: bump Chrome UA major to ${{ steps.live.outputs.major }} (TODO-P1-01)"
+          body: |
+            **Auto-generated** by `.github/workflows/chrome-ua-probe.yml` (TODO-P1-01 / SEC-P0-08 dynamic horizon).
+
+            | Field | Value |
+            |---|---|
+            | Configured | `${{ steps.configured.outputs.full }}` |
+            | Live (chromiumdash) | `${{ steps.live.outputs.full }}` |
+            | Major gap | ${{ steps.decide.outputs.gap }} |
+
+            Source: <https://chromiumdash.appspot.com/fetch_releases?channel=Stable&platform=Windows>
+
+            Threshold: gap ≥ 3 (Chrome ships ~4-week cadence; 3 majors ≈ 90-day SEC-P0-08 horizon).
+
+            Reviewer checklist:
+            - [ ] Diff touches only `src/discord_scanner/config.py` `user_agent_chrome_version` default.
+            - [ ] CI passes including the `_validate_chrome_ua` floor check.
+            - [ ] If we want to lag the live version (e.g. operator on a different stable), close this PR and bump manually.
+          labels: |
+            chore
+            security
+            auto-pr

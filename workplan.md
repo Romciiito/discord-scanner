@@ -575,7 +575,7 @@ Final state: 257 tests pass, 85.79% coverage, ruff/format/mypy clean.
 | Phase 9 — Daemon + Scheduling + Retention | `✅ DONE` | 2026-04-25 | Daemon loop, retention prune, clean SIGINT |
 | Phase 10 — CI/CD | `✅ DONE` | 2026-04-25 | GitHub Actions matrix, grep guards, Dependabot, pip-audit, bandit |
 | Phase 11 — Final Review + Smoke | `✅ DONE` | 2026-04-25 | Code-reviewer pass (0 critical / 2 high fixed / 6 medium fixed); 257 tests green @ 85.79%; runbooks + README + acceptance mapping |
-| Phase 12 — Hardening + first live run | `[ ] Not started` | — | TODO-P1-01 monthly Chrome-UA probe; SBOM-on-tag; live run on a low-stakes guild; Stage 3 fixture seed. Tracked in `../ROADMAP.md` (Stage 2+) |
+| Phase 12 — Hardening + first live run | `[ ] In progress` (started 2026-04-25) | — | 12.a Chrome-UA probe ✅ (D1 + workflow); 12.b SBOM-on-tag CI step ✅; 12.c–12.f pending operator pre-flight + live run. Tracked in `../ROADMAP.md` (Stage 2+) and `../PROJECT_WORKPLAN.md` §"Phase 2.12" |
 
 ---
 

@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: [main, bootstrap]
+    tags: ["v*"]
   pull_request:
     branches: [main]
 
@@ -73,3 +74,35 @@ jobs:
       - name: pip-audit
         run: pip-audit --strict
         continue-on-error: true
+
+  sbom:
+    name: SBOM (CycloneDX) on release tag
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install runtime + dev deps + cyclonedx-bom
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+          pip install cyclonedx-bom
+      - name: Generate CycloneDX SBOM (JSON)
+        run: |
+          # `cyclonedx-py environment` walks the active venv's installed
+          # packages and writes a CycloneDX 1.6 JSON SBOM. We tag it with
+          # the release tag for forensic provenance.
+          cyclonedx-py environment \
+            --output-format json \
+            --output-file sbom-${GITHUB_REF_NAME}.json
+      - name: Attach SBOM to GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: sbom-${{ github.ref_name }}.json
+          fail_on_unmatched_files: true

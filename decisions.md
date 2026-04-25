@@ -196,3 +196,62 @@ command wired end-to-end.
   run continue. Reviewer flagged as MINOR (prefer narrowing to
   `ValidationError`); accepted deferral, will be tightened in a Phase 5 polish pass.
 
+---
+
+## 2026-04-25 — Phase 12 hardening (D1 — Chrome-stable probe endpoint)
+
+**Context:** TODO-P1-01 has been carried forward since Phase 1. The compiled-in
+`_MIN_PLAUSIBLE_CHROME_MAJOR=130` floor in `src/discord_scanner/config.py`
+catches an absurdly stale UA at config-load time, but does NOT enforce the
+SEC-P0-08 dynamic "UA > 90 days behind live Chrome stable" horizon. The
+ROADMAP's Phase 12.a closes this with a monthly CI probe + auto-PR bump.
+
+The probe needs a deterministic, no-auth, JSON-returning endpoint that
+publishes the current Chrome stable major version per-platform.
+
+- **Decision:** use `https://chromiumdash.appspot.com/fetch_releases?channel=Stable&platform=Windows`
+  as the canonical source-of-truth for the monthly probe.
+
+  - Returns a JSON array of releases ordered newest-first; `[0].version` is
+    a string like `"134.0.6998.166"` from which the major is `int(version.split(".")[0])`.
+  - No auth required, no rate-limit pressure for a once-monthly call,
+    historically stable URL maintained by the Chromium team.
+  - `--platform=Windows` matches `config.http.fake_os_platform` default
+    ("Windows") so the probe stays in lock-step with the fingerprint we send.
+    If the operator changes platform, the probe URL must be updated to match.
+
+- **Rejected alternatives:**
+
+  - `https://versionhistory.googleapis.com/v1/chrome/platforms/win/channels/stable/versions`
+    — also deterministic + JSON, but the `versionhistory` API has shifted
+    its surface twice in the past 3 years; chromiumdash has been more stable.
+  - Chrome Releases RSS (`chromereleases.googleblog.com/feeds/posts/default`)
+    — versions appear in post titles as free text; parsing is fragile.
+  - Scraping `chrome://version` from a headless browser — violates
+    claude-rules MUST-NOT "No browser automation".
+
+- **Probe job behaviour (`.github/workflows/chrome-ua-probe.yml`):**
+
+  - Cron `0 0 1 * *` (1st of each month, 00:00 UTC) + `workflow_dispatch`
+    for manual validation.
+  - Step 1 — `curl` the endpoint, parse with `jq` (`-r '.[0].version'`).
+  - Step 2 — extract the major (`cut -d. -f1`).
+  - Step 3 — read `config.http.user_agent_chrome_version` from the test
+    config or a constant; compare majors.
+  - Step 4 — if our major is more than 3 minor-versions stale (a heuristic
+    proxy for the 90-day horizon, since Chrome ships ~every 4 weeks), open
+    an auto-PR via `peter-evans/create-pull-request@v6` bumping the value.
+    The PR body cites both the stale value and the live value, plus the
+    chromiumdash URL for human verification.
+  - The job always exits 0 — the auto-PR IS the signal. A failed probe
+    posts a workflow comment but does not fail CI; we don't want a probe
+    outage to block merges.
+
+- **Coupling note:** the probe checks one config field
+  (`config.http.user_agent_chrome_version`), not the platform-specific
+  `fake_os` / `fake_os_platform`. If the operator switches to macOS or
+  Linux fingerprint, the probe URL's `platform=Windows` query param must
+  be updated by hand. Tracked as Phase 13 polish (multi-platform probe).
+
+---
+

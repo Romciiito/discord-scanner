@@ -76,7 +76,7 @@ class HttpSettings(BaseModel):
     per_channel_delay_sec: tuple[float, float] = (1.5, 4.0)
     burst_pause_sec: tuple[float, float] = (30.0, 90.0)
     max_messages_per_scan: int = 10_000
-    user_agent_chrome_version: str = "134.0.0.0"
+    user_agent_chrome_version: str = "148.0.7778.56"
     fake_os: str = "Windows NT 10.0; Win64; x64"
     fake_os_platform: str = "Windows"
     locale: str = "en-US"

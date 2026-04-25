@@ -719,7 +719,7 @@ The heart of §4 anti-detection discipline is a **single configuration source** 
 
 ```
 ┌──── config.http ────────────────────────────────────────────┐
-│  user_agent_chrome_version   ("134.0.0.0")                  │
+│  user_agent_chrome_version   ("148.0.7778.56")              │
 │  fake_os                     ("Windows NT 10.0; Win64; x64")│
 │  fake_os_platform            ("Windows")                    │
 │  locale                      ("en-US")                      │

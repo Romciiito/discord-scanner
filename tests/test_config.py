@@ -19,7 +19,7 @@ def test_load_config_happy_path(tmp_config_yaml: Path) -> None:
     assert cfg.run.log_level == "info"
     assert cfg.auth.token_source == "keyring"  # noqa: S105 — literal is a config mode, not a password
     assert cfg.http.http2 is True
-    assert cfg.http.user_agent_chrome_version.startswith("134.")
+    assert cfg.http.user_agent_chrome_version.startswith("148.")
 
 
 def test_load_config_rejects_missing_file(tmp_path: Path) -> None:

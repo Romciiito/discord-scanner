@@ -255,3 +255,53 @@ publishes the current Chrome stable major version per-platform.
 
 ---
 
+## 2026-04-25 — Phase 12.a probe-validated; manual Chrome UA bump
+
+**Context:** First `workflow_dispatch` of `.github/workflows/chrome-ua-probe.yml`
+on commit `e1e4bab` (Romciiito/discord-scanner Actions run id 24935296446)
+produced these values:
+
+- Configured: `134.0.0.0` (major 134)
+- Live (chromiumdash): `148.0.7778.56` (major 148)
+- Major gap: 14 (well above the gap >= 3 threshold)
+
+The probe correctly flagged staleness, ran the in-place regex bump on
+`src/discord_scanner/config.py` in the runner, and called
+`peter-evans/create-pull-request@v6` — which failed with
+`GitHub Actions is not permitted to create or approve pull requests.`
+That is a repo-level setting (Settings → Actions → General → Workflow
+permissions → "Allow GitHub Actions to create and approve pull requests"),
+not a workflow bug.
+
+- **Decision:** apply the bump manually now rather than wait for the
+  setting flip. Configured value goes from `134.0.0.0` to `148.0.7778.56`
+  across:
+  - `src/discord_scanner/config.py` (the runtime default)
+  - `tests/conftest.py` test config fixture
+  - `tests/test_config.py` `.startswith("148.")` assertion
+  - `spec.md`, `seed-spec.md`, `docs/claude/architecture.md` example values
+
+- **Decision:** the auto-PR mechanism is validated to the point where it's
+  reasonable to trust monthly cron operation once the repo setting is
+  flipped. The remaining unverified piece is the `peter-evans/create-pull-request`
+  call itself — which is one of the most heavily used third-party Actions
+  and behaves the same way across thousands of repos. Risk of the cron
+  failing silently next month is low; if it does, the
+  `actions/permissions/workflow` API + the `Allow create/approve PRs`
+  setting needs operator action either way.
+
+- **Carried forward (Phase 13 hygiene):** if the operator wants
+  fully-autonomous monthly bumps, flip
+  `Repo → Settings → Actions → General → Workflow permissions → Allow
+  GitHub Actions to create and approve pull requests` to enabled, OR run
+  `gh api -X PUT /repos/Romciiito/discord-scanner/actions/permissions/workflow
+  -f default_workflow_permissions=write -F can_approve_pull_request_reviews=true`.
+
+- **Visibility note:** the repo flipped from PRIVATE to PUBLIC during this
+  same session at the operator's explicit instruction (GitHub Actions
+  billing block on the PRIVATE repo motivated the change). Public
+  exposure of the anti-detection technique stack and operator identity
+  (`Romciiito` ↔ burner-token Discord scraper) is an accepted risk per
+  operator decision; security-model.md §8's accepted-risk model already
+  covered the underlying Discord-ToS exposure.
+

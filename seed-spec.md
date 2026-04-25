@@ -163,7 +163,7 @@ http:
   per_channel_delay_sec: [1.5, 4.0]
   burst_pause_sec: [30, 90]
   max_messages_per_scan: 10000
-  user_agent_chrome_version: "134.0.0.0"
+  user_agent_chrome_version: "148.0.7778.56"
   fake_os: "Windows NT 10.0; Win64; x64"
   fake_os_platform: "Windows"
   locale: "en-US"

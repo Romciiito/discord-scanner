@@ -1,0 +1,67 @@
+# Pre-flight checklist — Phase 12.d first live run
+
+> Operator copies this file to `.tmp/preflight.md` (the destination is gitignored;
+> only the `.template` is tracked) and fills in every slot before running the
+> live scan. The completed checklist is the audit trail for the run.
+
+## Target
+
+- **Guild ID:**            <FILL IN — snowflake, e.g. 123456789012345678>
+- **Friendly name:**       <FILL IN — optional, just for your own records>
+- **Invite code:**         <FILL IN — the code you used to manually join>
+- **Intended scope:**      single guild via `--guild <ID>`; `max_messages_per_scan: 200`
+- **Run date (UTC):**      <FILL IN — YYYY-MM-DD HH:MM>
+
+## Self-checks (operator confirms each before running the scan)
+
+- [ ] **a. Burner aged ≥ 7 days in this guild.** Burner account joined the
+      target guild at least seven days ago. Fresh-join + immediate scrape is
+      a classic self-bot pattern; a quiet warm-up window flattens the curve.
+- [ ] **b. Burner has done normal browsing today.** Open Discord in the burner's
+      regular browser profile, click around in 2-3 channels, react to nothing.
+      The gateway PRESENCE UPDATE we send needs to land on a session that
+      Discord has already seen behaving like a human today.
+- [ ] **c. FileVault on (macOS) / BitLocker on (Windows) / LUKS on (Linux).**
+      `state/` and `output/` carry burner cookies and third-party PII; at-rest
+      encryption is non-negotiable per security-model.md §6 and the operator
+      obligations in `docs/claude/development.md`.
+- [ ] **d. No captcha event today on this burner.** Not in the scanner, not in
+      the browser. If you got a captcha when logging into Discord this morning,
+      stop here and follow Runbook 3 (24-72h cool-down) before scanning.
+- [ ] **e. Target guild is low-stakes.** Not medical / mental-health / minors-
+      focused / addiction-recovery / no-archive-rule. (Re-read the prohibited
+      classes in `docs/claude/development.md` if in doubt.)
+
+## CLI smoke (no Discord traffic)
+
+- [ ] `discord-scanner version` exits 0 and prints a version string.
+- [ ] `discord-scanner store-token` round-trips. Verify with:
+      `keyring get discord-scanner burner-1` returns a non-empty value.
+      (The token is masked in scanner logs but exposed in raw form by the
+      `keyring` CLI — close the terminal scrollback after.)
+- [ ] `cp config.live.yaml.example config.live.yaml` and edit
+      `discovery.manual_invites[0]` to the real invite code.
+- [ ] `discord-scanner scan --config config.live.yaml --guild <GUILD_ID> --dry-run`
+      exits 0. Verify the printed plan reads the right guild filter and shows
+      `max_messages_per_scan = 200`.
+
+## Hard-stop signals (abort the scan if you see any of these)
+
+- `captcha_aborted` — exit code 2; follow Runbook 3 (`docs/claude/development.md`).
+  Do NOT retry.
+- 401 on `/users/@me/guilds` (visible in `discord-scanner list-guilds`,
+  also surfaces in scan logs) — token is dead; follow Runbook 2 (token
+  compromise / rotation).
+- Repeated `gateway_invalid_session` events (more than 2 in a single scan) —
+  fingerprint divergence likely; abort, file a `decisions.md` note, and do
+  NOT rotate the burner blindly without first checking the gateway/REST
+  fingerprint parity (single-source-of-truth: `HttpSettings.fingerprint()`).
+
+## Notes
+
+- The actual `.tmp/preflight.md` you write from this template is gitignored,
+  so guild IDs, invite codes, and friendly names stay local to your
+  workstation. Keep it for your own audit log; do not commit it.
+- After the scan completes, update Runbook 5's post-run checklist
+  (`docs/claude/development.md`) with the observed counter ranges — those
+  feed the Phase 12.f lessons addendum in `decisions.md`.

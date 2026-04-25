@@ -13,8 +13,17 @@ foundation/
 # External repos cloned for reference — not part of this project
 dsc-smartscraper/
 
-# Runtime artefacts
-.tmp/
+# Operator's filled-in live config (the .example template stays tracked)
+config.live.yaml
+
+# Runtime artefacts.
+# Use `.tmp/*` (not `.tmp/`) so the `!.tmp/preflight.md.template` exception
+# below can actually re-include the template — git refuses to re-include
+# children of a directory excluded as a whole.
+.tmp/*
+# ...except the preflight runbook template, which is tracked so the
+# operator has a starting shell for `.tmp/preflight.md` (which stays local).
+!.tmp/preflight.md.template
 cache/
 cache-*/
 output/

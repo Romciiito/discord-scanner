@@ -1,0 +1,78 @@
+# config.live.yaml.example — Stage 2 Phase 12.d first live run (smoke profile).
+#
+# Operator copies this file to `config.live.yaml` (gitignored) and fills in
+# `discovery.manual_invites[0]` with the target guild's invite code BEFORE
+# running `discord-scanner scan --config config.live.yaml --guild <ID>`.
+#
+# Smoke-specific choices vs. defaults are called out inline. The single-guild
+# scope is enforced via `--guild <ID>` on the CLI rather than a config field
+# (config has no per-guild allowlist; CLI flag is the right knob).
+#
+# Traces to:
+#   - PROJECT_WORKPLAN.md §"2.12.c Pre-flight checklist" (smoke caps)
+#   - docs/claude/development.md "Runbook 5: First live run on a low-stakes guild"
+#   - src/discord_scanner/config.py (Settings model — keep keys in sync)
+
+run:
+    output_root: ./output
+    state_root: ./state
+    # info-level prints scan progress + counters but not per-message debug noise.
+    log_level: info
+
+auth:
+    # keyring is the only token source we use for live runs (SEC-P0-01 priority 1).
+    # Operator must `discord-scanner store-token` first; .env fallback is for tests.
+    token_source: keyring
+    keyring_service: discord-scanner
+    keyring_username: burner-1
+
+gateway:
+    # Dormant gateway IDENTIFY is mandatory: a session that only does REST
+    # without the WS handshake stands out as a self-bot in Discord telemetry.
+    enabled: true
+    presence: online
+
+http:
+    http2: true
+    timeout_sec: 30
+    # MUST match config.py default (SEC-P0-08 staleness floor + active fingerprint).
+    # The Chrome-UA probe (.github/workflows/chrome-ua-probe.yml) updates this
+    # alongside the runtime default; do not pin a different value here.
+    user_agent_chrome_version: "148.0.7778.56"
+    # Smoke cap: 200 keeps the first run small enough that any anomaly surfaces
+    # within minutes. Default is 10_000 — bump back to that after Phase 12.d
+    # signs off.
+    max_messages_per_scan: 200
+
+discovery:
+    # Stage 1 invite-discovery output lands here in production. For the live
+    # smoke run we drive a single invite via `manual_invites` and leave the
+    # file as a placeholder (the loader tolerates a non-existent file when
+    # manual_invites is populated).
+    invites_input: invites.json
+    manual_invites:
+        - "<INVITE_CODE_HERE>"
+    filter:
+        # Permissive: Stage 1.5 intent classifier has not shipped yet, so any
+        # allowlist would gate everything to zero. An empty list means "no
+        # intent filter" — every resolved guild passes through.
+        intent_allowlist: []
+
+attachments:
+    download_images: true
+    image_extensions: [.png, .jpg, .webp, .gif]
+    # Smoke cap: 5 MB per image (vs. 20 MB default) — keeps the first run's
+    # disk + bandwidth footprint small while still exercising the download
+    # path. MIME sniff + length guard already cover the security side.
+    max_size_mb: 5
+
+daemon:
+    # Daemon settings are defined for completeness; the live smoke run is a
+    # one-shot `scan` invocation, not `daemon` — these values do not gate it.
+    interval_hours: 168
+    jitter_hours: [-1, 2]
+    scan_start_window: "02:00-06:00 UTC"
+
+retention:
+    raw_dump_keep_days: 30
+    attachment_keep_days: 14

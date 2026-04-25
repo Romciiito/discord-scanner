@@ -21,9 +21,10 @@ Stage 2 — burner-token Discord scanner producing raw JSONL dumps for Stage 3 c
 | Doc | Read when you're about to... |
 |-----|------------------------------|
 | `docs/claude/architecture.md` | Understand the system, add a component, trace a data flow |
-| `docs/claude/development.md` | Run locally, write a test, add a route/model/page, deploy |
+| `docs/claude/development.md` | Run locally, write a test, add a route/model/page, run an operator runbook (burner rotation, token compromise, captcha response, chmod degradation) |
 | `docs/claude/design-decisions.md` | Question why something is built a certain way, propose alternatives |
 | `docs/claude/env-vars.md` | Add a new config value, debug a missing env var, set up a new environment |
+| `docs/claude/acceptance.md` | Verify the 15 acceptance criteria from `spec.md §11` still map to passing tests after a change |
 
 ---
 

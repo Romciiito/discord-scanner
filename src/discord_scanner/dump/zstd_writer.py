@@ -22,6 +22,7 @@ from pathlib import Path
 
 import zstandard as zstd
 
+from discord_scanner._paths import secure_mkdir
 from discord_scanner.dump.sort import canonical_json_dict, sort_messages
 from discord_scanner.logging_conf import get_logger
 from discord_scanner.models.message import Message
@@ -36,7 +37,7 @@ def write_jsonl_zst(path: Path, records: Iterable[Message], level: int = 3) -> i
     compressed bytes are at least algorithmically deterministic given the same
     input stream.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
+    secure_mkdir(path.parent)
     sorted_records = sort_messages(records)
     count = 0
 
@@ -52,7 +53,15 @@ def write_jsonl_zst(path: Path, records: Iterable[Message], level: int = 3) -> i
     plaintext = buffer.getvalue().encode("utf-8")
     cctx = zstd.ZstdCompressor(level=level)
     compressed = cctx.compress(plaintext)
-    path.write_bytes(compressed)
+    # Flush + fsync before returning so that cursor.advance() (which the
+    # caller will run next) cannot commit on top of an undurable file.
+    with path.open("wb") as fh:
+        fh.write(compressed)
+        fh.flush()
+        try:
+            os.fsync(fh.fileno())
+        except OSError as e:
+            logger.debug("zst_fsync_failed", path=str(path), err=str(e))
     try:
         os.chmod(path, 0o600)
     except OSError as e:

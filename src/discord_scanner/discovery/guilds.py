@@ -14,14 +14,33 @@ import httpx
 
 from discord_scanner.logging_conf import get_logger
 from discord_scanner.models.discord import Guild
+from discord_scanner.session.retry import (
+    ChannelAbort,
+    RetryableResponseError,
+    request_with_retry,
+)
 
 logger = get_logger(__name__)
 
 
 async def list_my_guilds(client: httpx.AsyncClient) -> list[Guild]:
-    """Return every guild the burner has joined. Skips malformed records."""
+    """Return every guild the burner has joined. Skips malformed records.
+
+    Wrapped in `request_with_retry` so 429 Retry-After + 5xx backoff are
+    honoured (SEC-P0-15). On `ChannelAbort` (3 consecutive 429s) returns []
+    so callers can degrade gracefully.
+    """
     url = "https://discord.com/api/v10/users/@me/guilds"
-    resp = await client.get(url)
+    try:
+        resp = await request_with_retry(client, "GET", url)
+    except ChannelAbort:
+        logger.warning("list_guilds_channel_abort")
+        return []
+    except RetryableResponseError as e:
+        # Retries exhausted on a 5xx — degrade to empty list rather than
+        # bubbling up. Caller logs the http error and continues.
+        logger.warning("list_guilds_retries_exhausted", status=e.status)
+        return []
     if resp.status_code >= 400:
         logger.warning("list_guilds_http_error", status=resp.status_code)
         return []

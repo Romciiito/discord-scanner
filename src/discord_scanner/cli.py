@@ -146,15 +146,16 @@ def store_token(ctx: typer.Context) -> None:
         console.print(f"[red]keyring import failed:[/red] {e}")
         raise typer.Exit(1) from e
 
-    # SEC-P0-06: detect + refuse plaintext backends.
+    # SEC-P0-06: detect + refuse plaintext backends — one predicate shared
+    # with session/auth.py so read- and write-side checks cannot drift.
+    from discord_scanner.session.auth import is_plaintext_keyring_backend
+
     backend = _kr.get_keyring()
-    cls = type(backend)
-    cls_name = cls.__name__
-    cls_module = cls.__module__
-    if "Plaintext" in cls_name or "keyrings.alt" in cls_module:
+    if is_plaintext_keyring_backend(backend):
+        cls = type(backend)
         console.print(
             "[red]refusing:[/red] detected plaintext keyring backend "
-            f"{cls_module}.{cls_name}. Install a platform-native backend "
+            f"{cls.__module__}.{cls.__name__}. Install a platform-native backend "
             "(Windows Credential Manager / macOS Keychain / Linux Secret Service)."
         )
         raise typer.Exit(1)
@@ -299,18 +300,38 @@ def list_guilds(ctx: typer.Context) -> None:
     get_logger().info("list_guilds_start", token_source=source.value)
 
     async def _run() -> int:
+        from rich.markup import escape
+
+        from discord_scanner.discovery.guilds import list_my_guilds
+        from discord_scanner.logging_conf import _redact_string
+        from discord_scanner.session.retry import request_with_retry
+
         client = make_client(settings, token)
         try:
-            resp = await client.get("https://discord.com/api/v10/users/@me/guilds")
+            # 401 detection still goes through the raw response so we can map
+            # to exit code 3 (detected-ban). Wrapped in request_with_retry for
+            # SEC-P0-15 (Retry-After + 5xx backoff).
+            try:
+                resp = await request_with_retry(
+                    client, "GET", "https://discord.com/api/v10/users/@me/guilds"
+                )
+            except Exception as e:  # noqa: BLE001 — surface to caller
+                console.print(f"[red]http error:[/red] {escape(_redact_string(str(e)))}")
+                return 2
             if resp.status_code == 401:
                 console.print("[red]401 Unauthorized:[/red] token invalid (possible ban).")
                 return 3
             if resp.status_code >= 400:
-                console.print(f"[red]HTTP {resp.status_code}:[/red] {resp.text[:200]}")
+                snippet = _redact_string(resp.text[:200])
+                console.print(
+                    f"[red]HTTP {resp.status_code}:[/red] {escape(snippet)}",
+                )
                 return 2
-            guilds = resp.json()
+            # Re-list via the typed discovery helper so we get pydantic coercion +
+            # malformed-record skipping consistent with the rest of the pipeline.
+            guilds = await list_my_guilds(client)
             for g in guilds:
-                console.print(f"  {g.get('id')}  {g.get('name')}")
+                console.print(f"  {escape(g.id)}  {escape(g.name or '')}")
             console.print(f"[green]ok[/green] {len(guilds)} guilds.")
             return 0
         finally:

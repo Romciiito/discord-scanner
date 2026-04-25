@@ -185,13 +185,15 @@ class Settings(BaseSettings):
     daemon: DaemonSettings = Field(default_factory=DaemonSettings)
     retention: RetentionSettings = Field(default_factory=RetentionSettings)
 
-    # Token from env var DISCORD_TOKEN — SEC-P0-01 priority 2.
-    discord_token: SecretStr | None = Field(default=None)
-
     def __repr__(self) -> str:
+        # Custom repr keeps `auth` reduced to a literal "***" so even a stray
+        # debug print of the Settings object cannot leak the token. SecretStr
+        # masking already covers the value; this is defence-in-depth.
         return (
             f"Settings(run={self.run!r}, auth=AuthSettings(..., token=***), "
-            f"gateway={self.gateway!r}, http={self.http!r})"
+            f"gateway={self.gateway!r}, http={self.http!r}, retry={self.retry!r}, "
+            f"discovery={self.discovery!r}, attachments={self.attachments!r}, "
+            f"daemon={self.daemon!r}, retention={self.retention!r})"
         )
 
 
@@ -222,12 +224,15 @@ def _resolve_within(candidate: Path, project_root: Path) -> Path:
             ]
         )
     for reserved in reserved_prefixes:
+        # Resolve the reserved prefix too: on macOS /etc is a symlink to
+        # /private/etc, so an unresolved comparison would silently pass.
+        reserved_resolved = reserved.resolve()
         try:
-            resolved.relative_to(reserved)
+            resolved.relative_to(reserved_resolved)
         except ValueError:
             continue
         raise ConfigError(
-            f"path {resolved} is inside reserved OS location {reserved}; "
+            f"path {resolved} is inside reserved OS location {reserved_resolved}; "
             "refusing to write there (SSRF / path-traversal guard)"
         )
     # `..` already collapsed by resolve(); reject if still present in str form

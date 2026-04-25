@@ -20,6 +20,7 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
+from discord_scanner._paths import secure_mkdir
 from discord_scanner.dump.sort import canonical_json_dict, sort_messages
 from discord_scanner.logging_conf import get_logger
 from discord_scanner.models.message import Message
@@ -32,17 +33,24 @@ def write_jsonl(path: Path, records: Iterable[Message]) -> int:
 
     Returns the number of lines written. Sort is applied before serialisation.
     `allow_nan=False` raises `ValueError` on any `NaN` / `Infinity` —
-    claude-rules MUST.
+    claude-rules MUST. Caller may call `cursor.advance()` only after this
+    returns; the file is flushed + fsync'd before return so a crash between
+    write and cursor commit cannot desync state (seed-spec §2.7).
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
+    secure_mkdir(path.parent)
     sorted_records = sort_messages(records)
     count = 0
     with path.open("w", encoding="utf-8", newline="") as fh:
         for rec in sorted_records:
             payload = canonical_json_dict(rec.model_dump(mode="json"))
-            line = json.dumps(payload, allow_nan=False, separators=(",", ":"))
+            line = json.dumps(payload, allow_nan=False, separators=(",", ":"), ensure_ascii=False)
             fh.write(line + "\n")
             count += 1
+        fh.flush()
+        try:
+            os.fsync(fh.fileno())
+        except OSError as e:
+            logger.debug("jsonl_fsync_failed", path=str(path), err=str(e))
     try:
         os.chmod(path, 0o600)
     except OSError as e:
@@ -54,14 +62,20 @@ def write_jsonl(path: Path, records: Iterable[Message]) -> int:
 def write_json(path: Path, data: dict[str, Any]) -> None:
     """Write a single canonical JSON object to `path` (used by meta.json / prior).
 
-    Sorted keys, compact separators, no NaN.
+    Sorted keys, compact separators, no NaN. Flushed + fsync'd before return.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
+    secure_mkdir(path.parent)
     payload = canonical_json_dict(data)
-    path.write_text(
-        json.dumps(payload, allow_nan=False, separators=(",", ":")),
-        encoding="utf-8",
+    blob = json.dumps(payload, allow_nan=False, separators=(",", ":"), ensure_ascii=False).encode(
+        "utf-8"
     )
+    with path.open("wb") as fh:
+        fh.write(blob)
+        fh.flush()
+        try:
+            os.fsync(fh.fileno())
+        except OSError as e:
+            logger.debug("json_fsync_failed", path=str(path), err=str(e))
     try:
         os.chmod(path, 0o600)
     except OSError as e:

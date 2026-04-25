@@ -21,6 +21,7 @@ import httpx
 from discord_scanner.discovery.invite_cache import InviteCache
 from discord_scanner.logging_conf import get_logger, redact_invite_code
 from discord_scanner.models.discord import ResolvedInvite, is_valid_invite_code
+from discord_scanner.session.retry import ChannelAbort, request_with_retry
 
 logger = get_logger(__name__)
 
@@ -57,7 +58,11 @@ async def resolve_invite(
             return hit
 
     url = f"https://discord.com/api/v10/invites/{code}?with_counts=true&with_expiration=true"
-    resp = await client.get(url)
+    try:
+        resp = await request_with_retry(client, "GET", url)
+    except ChannelAbort:
+        logger.warning("invite_resolve_channel_abort", code=redact_invite_code(code))
+        return None
     if resp.status_code == 401:
         # 401 = token invalid / banned. Propagate so the CLI exits 3 (detected-ban)
         # rather than silently skipping every invite and exiting 0.

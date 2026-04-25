@@ -149,7 +149,9 @@ class DormantGateway:
                 ),
             )
             return
-        self._state_root.mkdir(parents=True, exist_ok=True)
+        from discord_scanner._paths import secure_mkdir
+
+        secure_mkdir(self._state_root)
         self._acquire_lock()
         self._ws = await websockets.connect(GATEWAY_URL, max_size=2**20)
         try:

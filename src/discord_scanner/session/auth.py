@@ -40,6 +40,23 @@ class TokenNotFound(RuntimeError):
     """All three sources yielded no token. The caller should exit 1."""
 
 
+_PLAINTEXT_MODULE_PREFIX = "keyrings.alt."
+
+
+def is_plaintext_keyring_backend(backend: object) -> bool:
+    """Single source of truth for SEC-P0-06 plaintext-backend detection.
+
+    Returns True if `backend` is a `keyrings.alt.*` module class OR has
+    `Plaintext` anywhere in its class name. Used by both `_check_backend_not_plaintext`
+    here and the `store-token` CLI command — keeping one predicate avoids
+    drift between read- and write-side checks.
+    """
+    cls = type(backend)
+    name = cls.__name__
+    module = cls.__module__
+    return "Plaintext" in name or module.startswith(_PLAINTEXT_MODULE_PREFIX)
+
+
 def _check_backend_not_plaintext() -> None:
     """Inspect the active keyring backend; raise if it is a plaintext variant."""
     try:
@@ -48,12 +65,10 @@ def _check_backend_not_plaintext() -> None:
         raise TokenNotFound("keyring not importable") from e
 
     backend = _kr.get_keyring()
-    cls = type(backend)
-    name = cls.__name__
-    module = cls.__module__
-    if "Plaintext" in name or module.startswith("keyrings.alt"):
+    if is_plaintext_keyring_backend(backend):
+        cls = type(backend)
         raise PlaintextKeyringRefused(
-            f"refusing plaintext keyring backend {module}.{name}. "
+            f"refusing plaintext keyring backend {cls.__module__}.{cls.__name__}. "
             "Install a platform-native backend "
             "(Windows Credential Manager / macOS Keychain / Linux Secret Service)."
         )

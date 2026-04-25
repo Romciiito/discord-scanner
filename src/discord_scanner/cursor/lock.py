@@ -27,7 +27,9 @@ class CursorLock:
     """Context manager over `state/cursor.lock`. Second acquire → exit 1."""
 
     def __init__(self, state_root: Path) -> None:
-        state_root.mkdir(parents=True, exist_ok=True)
+        from discord_scanner._paths import secure_mkdir
+
+        secure_mkdir(state_root)
         self._lock_path = state_root / "cursor.lock"
         self._lock = FileLock(str(self._lock_path), timeout=0)
 

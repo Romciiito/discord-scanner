@@ -21,7 +21,7 @@ Design rules:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Final
+from typing import Any, Final
 from urllib.parse import urlparse
 
 import httpx
@@ -32,6 +32,7 @@ from discord_scanner.logging_conf import get_logger
 from discord_scanner.session.captcha import check_response
 from discord_scanner.session.cookies import load_jar, save_jar
 from discord_scanner.session.headers import build_rest_headers
+from discord_scanner.session.rate_limit import RateLimiter
 
 logger = get_logger(__name__)
 
@@ -104,6 +105,26 @@ async def _check_captcha_on_response(response: httpx.Response) -> None:
         check_response(response)
 
 
+def _make_rate_limit_hook(limiter: RateLimiter) -> Any:
+    """Return an httpx request hook that awaits the per-host token bucket
+    before the request leaves the client.
+
+    Wires SEC-P0-14 / claude-rules "Rate-limit + jitter (per-host token
+    bucket)" into every outbound HTTP, not just the message-fetch loop.
+    The host key is the URL host with `/api` suffix when applicable so the
+    `discord.com/api: 2 req/s` configured rate is matched.
+    """
+
+    async def _hook(request: httpx.Request) -> None:
+        host = request.url.host
+        path = request.url.path or ""
+        # Match the configured key shape: `discord.com/api` (not just `discord.com`).
+        key = "discord.com/api" if host == "discord.com" and path.startswith("/api") else host
+        await limiter._bucket_for(key).acquire()  # noqa: SLF001 — single-package usage
+
+    return _hook
+
+
 def make_client(
     settings: Settings,
     token: SecretStr,
@@ -120,6 +141,11 @@ def make_client(
 
     cookies = load_jar(state_root, settings.auth.keyring_username)
 
+    # SEC-P0-14: per-host token bucket on every outbound request, not just
+    # message paginate. One limiter per scan (one client = one limiter).
+    limiter = RateLimiter(per_host_rate_per_sec=dict(settings.http.per_host_rate_per_sec))
+    rate_limit_hook = _make_rate_limit_hook(limiter)
+
     client = httpx.AsyncClient(
         http2=True,
         verify=True,
@@ -128,15 +154,20 @@ def make_client(
         cookies=cookies,
         follow_redirects=True,
         event_hooks={
-            "request": [_enforce_allowlist, _strip_auth_on_cdn],
+            "request": [_enforce_allowlist, _strip_auth_on_cdn, rate_limit_hook],
             "response": [_check_captcha_on_response],
         },
     )
+    # Stash the limiter on the client for fetch-layer access (burst pause +
+    # explicit `async with limiter.acquire(host)` if needed). Using a private
+    # attribute name to avoid colliding with httpx fields.
+    client._discord_scanner_limiter = limiter  # type: ignore[attr-defined]  # noqa: SLF001
     logger.info(
         "rest_client_created",
         http2=True,
         verify=True,
         allowed_hosts=sorted(ALLOWED_NETLOCS),
+        per_host_rate_per_sec=dict(settings.http.per_host_rate_per_sec),
     )
     return client
 

@@ -54,6 +54,9 @@ http:
   locale: "en-US"
   timezone: "Europe/Prague"
   client_build_number: 300000
+  per_host_rate_per_sec:
+    "discord.com/api": 1000.0
+    "cdn.discordapp.com": 1000.0
 retry:
   attempts: 3
 discovery:
@@ -127,6 +130,36 @@ def _no_real_env(monkeypatch: pytest.MonkeyPatch) -> None:
     # Guard: never leak real home-dir .env into tests
     monkeypatch.setenv("DISCORD_SCANNER_TEST_MODE", "1")
     assert os.environ.get("DISCORD_SCANNER_TEST_MODE") == "1"
+
+
+@pytest.fixture(autouse=True)
+def _fast_retry_backoff(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Wrap `request_with_retry` so its default backoff is millisecond-scale.
+
+    Production callers that pass explicit `backoff_initial_sec` keep their
+    values. Callers that rely on defaults (discovery layer, list-guilds CLI)
+    get sub-second waits in tests so a 500-mock test doesn't burn 30 s of CI
+    time on exponential backoff.
+    """
+    import discord_scanner.discovery.channels as ch_mod
+    import discord_scanner.discovery.forums as fr_mod
+    import discord_scanner.discovery.guilds as gd_mod
+    import discord_scanner.discovery.invite_resolve as iv_mod
+    import discord_scanner.session.retry as retry_mod
+
+    real = retry_mod.request_with_retry
+
+    async def fast_request_with_retry(*args, **kwargs):  # type: ignore[no-untyped-def]
+        kwargs.setdefault("backoff_initial_sec", 0.001)
+        kwargs.setdefault("backoff_max_sec", 0.01)
+        kwargs.setdefault("attempts", 3)
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(retry_mod, "request_with_retry", fast_request_with_retry)
+    # The discovery modules import the symbol at module load time, so patch
+    # each binding too.
+    for mod in (gd_mod, ch_mod, fr_mod, iv_mod):
+        monkeypatch.setattr(mod, "request_with_retry", fast_request_with_retry)
 
 
 # ----------------------------------------------------------------------

@@ -67,7 +67,9 @@ def load_jar(state_root: Path, username: str) -> httpx.Cookies:
 
 def save_jar(jar: httpx.Cookies, state_root: Path, username: str) -> None:
     """Persist the cookie jar with file perms `0o600` (SEC-P0-22 best-effort on Windows)."""
-    state_root.mkdir(parents=True, exist_ok=True)
+    from discord_scanner._paths import secure_mkdir
+
+    secure_mkdir(state_root)
     path = jar_path(state_root, username)
     records: list[dict[str, str]] = []
     for cookie in jar.jar:

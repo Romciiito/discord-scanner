@@ -83,12 +83,13 @@ async def download_attachment(
             saved_path=None, reason="ext_forbidden", bytes_read=0, cdn_url=cdn_url
         )
 
+    from discord_scanner._paths import secure_mkdir
+
     attachments_dir = output_root / guild_id / date_str / "attachments"
-    attachments_dir.mkdir(parents=True, exist_ok=True)
-    try:
-        os.chmod(attachments_dir, 0o700)
-    except OSError as e:
-        logger.debug("chmod_dir_best_effort_failed", path=str(attachments_dir), err=str(e))
+    # Walk parent chain so output_root, guild_id, date dir all get 0o700.
+    for parent in (output_root, output_root / guild_id, output_root / guild_id / date_str):
+        secure_mkdir(parent)
+    secure_mkdir(attachments_dir)
 
     safe_name = sanitise_filename(raw_filename, msg_id)
     target_path = attachments_dir / safe_name
@@ -146,7 +147,9 @@ async def _stream_to_disk(
 
     # Open file only AFTER we have a valid MIME sniff — avoids creating an
     # empty file on mismatch. Keep ONE handle open across all chunks (reviewer
-    # MAJOR: per-chunk reopen defeats OS buffering).
+    # MAJOR: per-chunk reopen defeats OS buffering). The handle MUST be
+    # closed in the finally block on every exit path; on the success path we
+    # also fsync so the cursor-advance contract (caller's invariant) holds.
     fh: Path | None = None
     out_fh: io.BufferedWriter | None = None
     try:
@@ -238,8 +241,8 @@ async def _stream_to_disk(
                     bytes_read=len(sniff_buffer),
                     cdn_url=cdn_url,
                 )
-            with target_path.open("wb") as out:
-                out.write(sniff_buffer)
+            out_fh = target_path.open("wb")
+            out_fh.write(sniff_buffer)
             fh = target_path
             bytes_read = len(sniff_buffer)
 
@@ -252,6 +255,17 @@ async def _stream_to_disk(
     except Exception:
         _delete_partial(target_path)
         raise
+    finally:
+        # Close the file handle on every exit path (success, mime/oversize
+        # early return, exception). Flush + fsync on success so a crash
+        # between cursor-advance and disk-flush can't desync state.
+        if out_fh is not None and not out_fh.closed:
+            try:
+                out_fh.flush()
+                os.fsync(out_fh.fileno())
+            except OSError as e:
+                logger.debug("attachment_fsync_failed", err=str(e))
+            out_fh.close()
 
 
 def _delete_partial(path: Path) -> None:

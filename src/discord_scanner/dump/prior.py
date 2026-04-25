@@ -15,6 +15,7 @@ import re
 from pathlib import Path
 from typing import Final
 
+from discord_scanner._paths import secure_mkdir
 from discord_scanner.logging_conf import get_logger
 
 logger = get_logger(__name__)
@@ -52,10 +53,21 @@ def resolve_prior_date(guild_dir: Path, current_date: str) -> str | None:
 
 
 def write_prior(path: Path, prior_date: str | None) -> None:
-    """Write prior.txt. Empty string if no prior scan exists (REQ-F-029)."""
-    path.parent.mkdir(parents=True, exist_ok=True)
+    """Write prior.txt. Empty string if no prior scan exists (REQ-F-029).
+
+    Flushed + fsync'd before return — same durability contract as the JSONL
+    writers (seed-spec §2.7).
+    """
+    secure_mkdir(path.parent)
     content = (prior_date or "") + "\n" if prior_date else ""
-    path.write_text(content, encoding="utf-8")
+    blob = content.encode("utf-8")
+    with path.open("wb") as fh:
+        fh.write(blob)
+        fh.flush()
+        try:
+            os.fsync(fh.fileno())
+        except OSError as e:
+            logger.debug("prior_fsync_failed", path=str(path), err=str(e))
     try:
         os.chmod(path, 0o600)
     except OSError as e:

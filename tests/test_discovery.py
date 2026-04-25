@@ -136,12 +136,14 @@ async def test_resolve_invite_happy_path(tmp_state_root: Path) -> None:
             assert r is not None
             assert r.guild_id == "111"
             assert r.guild_name == "Demo"
-            # second call hits cache, makes no network request
-            with respx.mock(assert_all_called=False) as mock2:
-                _ = mock2  # ensure respx is not re-mocking this URL
-                r2 = await resolve_invite(client, "abcd", cache=cache)
-                assert r2 is not None
-                assert r2.guild_id == "111"
+            calls_after_first = mock.calls.call_count
+            # Second call MUST hit cache, make no network request.
+            r2 = await resolve_invite(client, "abcd", cache=cache)
+            assert r2 is not None
+            assert r2.guild_id == "111"
+            assert mock.calls.call_count == calls_after_first, (
+                "cache hit should not have issued a second network call"
+            )
 
 
 @pytest.mark.asyncio

@@ -108,14 +108,22 @@ async def test_retention_runs_before_each_scan(
     assert prune_calls[0]["keep"] == 7
 
 
-def test_stats_returns_copy() -> None:
-    """Stats property returns a fresh DaemonStats each call (tests don't mutate internals)."""
-    cfg = None  # not used here; direct construction via minimum-viable stub
-    stats = DaemonStats(iterations=5, last_scan_error="x", sleep_seconds_last=1.0)
-    assert stats.iterations == 5
-    stats.iterations = 999
-    assert stats.iterations == 999  # local var is free to mutate
-    _ = cfg  # silence unused
+def test_stats_returns_copy(tmp_config_yaml: Path) -> None:
+    """`DaemonLoop.stats` MUST return a fresh `DaemonStats` each call so tests
+    cannot accidentally mutate the loop's internal counter."""
+    cfg = load_config(tmp_config_yaml)
+
+    async def _noop_scan(_s: Settings) -> None:
+        return None
+
+    loop = DaemonLoop(cfg, _noop_scan)
+    snapshot = loop.stats
+    snapshot.iterations = 999
+    # Mutating the snapshot must not affect the loop's internal state.
+    assert loop.stats.iterations == 0
+    # Sanity: `DaemonStats` is still constructible directly with field values.
+    direct = DaemonStats(iterations=5, last_scan_error="x", sleep_seconds_last=1.0)
+    assert direct.iterations == 5
 
 
 @pytest.mark.asyncio

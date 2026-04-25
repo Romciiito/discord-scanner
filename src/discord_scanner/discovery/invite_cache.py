@@ -45,7 +45,9 @@ class InviteCache:
     """Thin sqlite wrapper — opens/creates the cache DB on first use."""
 
     def __init__(self, state_root: Path) -> None:
-        state_root.mkdir(parents=True, exist_ok=True)
+        from discord_scanner._paths import secure_mkdir
+
+        secure_mkdir(state_root)
         self._path = state_root / "invite_cache.sqlite"
         fresh = not self._path.exists()
         self._conn = sqlite3.connect(self._path)

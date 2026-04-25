@@ -25,6 +25,7 @@ Stage 2 — burner-token Discord scanner producing raw JSONL dumps for Stage 3 c
 | `docs/claude/design-decisions.md` | Question why something is built a certain way, propose alternatives |
 | `docs/claude/env-vars.md` | Add a new config value, debug a missing env var, set up a new environment |
 | `docs/claude/acceptance.md` | Verify the 15 acceptance criteria from `spec.md §11` still map to passing tests after a change |
+| `../ROADMAP.md` | See where Stage 2 fits in the four-stage plan, what's next (Phase 12 hardening, Stage 3 bootstrap), and which TODOs are carried forward |
 
 ---
 

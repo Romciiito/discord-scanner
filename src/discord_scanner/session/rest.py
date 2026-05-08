@@ -129,13 +129,24 @@ def make_client(
     settings: Settings,
     token: SecretStr,
     state_root: Path | None = None,
+    *,
+    http_overrides: Any | None = None,
 ) -> httpx.AsyncClient:
     """Build the single shared AsyncClient for a scan.
 
     The caller owns the client lifecycle (`async with ...` or explicit
     `await client.aclose()`). Persist the cookie jar via `persist_cookies`
     on close.
+
+    M.3 multi-burner (`http_overrides` is `BurnerHttpOverrides`): when
+    set, the named `http.*` fields are shallow-merged into a per-burner
+    settings snapshot before constructing the client. The same snapshot
+    must be passed to `DormantGateway` so the IDENTIFY `properties` blob
+    matches `X-Super-Properties` byte-for-byte (SEC-P0-25).
     """
+    if http_overrides is not None:
+        settings = _apply_http_overrides(settings, http_overrides)
+
     if state_root is None:
         state_root = settings.run.state_root
 
@@ -143,7 +154,44 @@ def make_client(
 
     # SEC-P0-14: per-host token bucket on every outbound request, not just
     # message paginate. One limiter per scan (one client = one limiter).
-    limiter = RateLimiter(per_host_rate_per_sec=dict(settings.http.per_host_rate_per_sec))
+    # When `http.adaptive.enabled=True`, build an `AdaptiveRateLimiter` —
+    # which IS-A `RateLimiter` so the request hook works unchanged, but
+    # ALSO records response signals via `record_response()` from inside
+    # `request_with_retry` (the retry layer auto-detects an AdaptiveRL on
+    # the client and threads it through).
+    limiter: RateLimiter
+    if settings.http.adaptive.enabled:
+        from discord_scanner.session.adaptive import (
+            AdaptiveConfig,
+            AdaptiveRateLimiter,
+        )
+
+        a = settings.http.adaptive
+        adaptive_config = AdaptiveConfig(
+            enabled=True,
+            degraded_factor_range=a.degraded_factor_range,
+            degrade_on_5xx_in_window=a.degrade_on_5xx_in_window,
+            degrade_on_latency_p95_ms=a.degrade_on_latency_p95_ms,
+            degrade_window_sec=a.degrade_window_sec,
+            recover_after_successes=a.recover_after_successes,
+            cooldown_on_consecutive_429=a.cooldown_on_consecutive_429,
+            cooldown_on_captcha=a.cooldown_on_captcha,
+            cooldown_on_403_streak=a.cooldown_on_403_streak,
+            cooldown_duration_sec=a.cooldown_duration_sec,
+            session_break_every_requests=a.session_break_every_requests,
+            session_break_duration_sec=a.session_break_duration_sec,
+            circadian_enabled=a.circadian.enabled,
+            circadian_timezone=a.circadian.timezone,
+            circadian_sleep_window=a.circadian.sleep_window,
+            circadian_sleep_probability=a.circadian.sleep_probability,
+            circadian_twilight_hours=a.circadian.twilight_hours,
+        )
+        limiter = AdaptiveRateLimiter(
+            per_host_rate_per_sec=dict(settings.http.per_host_rate_per_sec),
+            config=adaptive_config,
+        )
+    else:
+        limiter = RateLimiter(per_host_rate_per_sec=dict(settings.http.per_host_rate_per_sec))
     rate_limit_hook = _make_rate_limit_hook(limiter)
 
     client = httpx.AsyncClient(
@@ -181,3 +229,36 @@ def persist_cookies(
     if state_root is None:
         state_root = settings.run.state_root
     save_jar(client.cookies, state_root, settings.auth.keyring_username)
+
+
+def _apply_http_overrides(settings: Settings, http_overrides: Any) -> Settings:
+    """Build a per-burner settings snapshot with `http_overrides` merged.
+
+    Shared by `make_client` and `DormantGateway` so the IDENTIFY blob and
+    `X-Super-Properties` are guaranteed to read from the same source
+    (SEC-P0-25). Pure function — does not mutate the input.
+
+    `http_overrides` is duck-typed as `BurnerHttpOverrides` (importing it
+    here would create a config<->session circular dep): we just probe for
+    the named optional fields. Unset (`None`) fields fall back to global.
+    """
+    update: dict[str, Any] = {}
+    if getattr(http_overrides, "user_agent_chrome_version", None) is not None:
+        update["user_agent_chrome_version"] = http_overrides.user_agent_chrome_version
+    if getattr(http_overrides, "fake_os_platform", None) is not None:
+        update["fake_os_platform"] = http_overrides.fake_os_platform
+    if getattr(http_overrides, "fake_os", None) is not None:
+        update["fake_os"] = http_overrides.fake_os
+    if getattr(http_overrides, "locale", None) is not None:
+        update["locale"] = http_overrides.locale
+    if getattr(http_overrides, "client_build_number", None) is not None:
+        update["client_build_number"] = http_overrides.client_build_number
+    if not update:
+        return settings
+    new_http = settings.http.model_copy(update=update)
+    logger.info(
+        "http_overrides_applied",
+        keyring_username=settings.auth.keyring_username,
+        fields=sorted(update.keys()),
+    )
+    return settings.model_copy(update={"http": new_http})

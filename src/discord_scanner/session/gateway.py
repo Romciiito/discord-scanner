@@ -110,7 +110,18 @@ class DormantGateway:
         settings: Settings,
         token: SecretStr,
         state_root: Path | None = None,
+        *,
+        http_overrides: Any | None = None,
     ) -> None:
+        # M.3 multi-burner: when `http_overrides` is supplied, shallow-merge
+        # it into `settings.http` before storing. CRITICAL: the orchestrator
+        # MUST pass the same overrides object to both `make_client` and
+        # this class so IDENTIFY `properties` and REST `X-Super-Properties`
+        # are byte-identical (SEC-P0-25).
+        if http_overrides is not None:
+            from discord_scanner.session.rest import _apply_http_overrides
+
+            settings = _apply_http_overrides(settings, http_overrides)
         self._settings = settings
         self._token = token
         self._state_root = state_root or settings.run.state_root

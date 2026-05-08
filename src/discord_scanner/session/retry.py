@@ -16,7 +16,8 @@ Exposes:
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Final
+import time
+from typing import TYPE_CHECKING, Any, Final
 
 import httpx
 from tenacity import (
@@ -29,10 +30,16 @@ from tenacity import (
 
 from discord_scanner.logging_conf import get_logger
 
+if TYPE_CHECKING:
+    from discord_scanner.session.adaptive import AdaptiveRateLimiter
+
 logger = get_logger(__name__)
 
 MAX_429_RETRIES: Final[int] = 3
 RETRY_STATUSES: Final[frozenset[int]] = frozenset({429, 500, 502, 503, 504})
+
+# Captcha detection markers (mirrors session/rest.py captcha hard-abort logic).
+_CAPTCHA_MARKERS: Final[tuple[str, ...]] = ("captcha_key", "captcha_sitekey", "captcha_service")
 
 
 class ChannelAbort(RuntimeError):
@@ -71,6 +78,30 @@ async def _sleep_retry_after(resp: httpx.Response) -> None:
     await asyncio.sleep(min(seconds, 120.0))  # 2-min cap to stay responsive
 
 
+def _resolve_adaptive(
+    client: httpx.AsyncClient,
+    explicit: AdaptiveRateLimiter | None,
+) -> AdaptiveRateLimiter | None:
+    """Pick the adaptive limiter to record against.
+
+    Precedence: caller-provided `explicit` arg wins; otherwise auto-detect
+    by inspecting the client for an `_discord_scanner_limiter` attribute
+    (set by `make_client`) — return it only if it's an AdaptiveRateLimiter
+    instance with `.record_response`. This keeps every call site in
+    `fetch/`, `discovery/`, `dump/` adaptive-aware without per-callsite
+    edits."""
+    if explicit is not None:
+        return explicit
+    candidate = getattr(client, "_discord_scanner_limiter", None)
+    if candidate is None:
+        return None
+    # Duck-type detection — `AdaptiveRateLimiter` extends `RateLimiter`.
+    # `record_response` is only defined on the adaptive subclass.
+    if hasattr(candidate, "record_response") and callable(candidate.record_response):
+        return candidate
+    return None
+
+
 async def request_with_retry(
     client: httpx.AsyncClient,
     method: str,
@@ -79,9 +110,17 @@ async def request_with_retry(
     backoff_initial_sec: float = 2.0,
     backoff_max_sec: float = 60.0,
     attempts: int = 5,
+    adaptive: AdaptiveRateLimiter | None = None,
     **request_kwargs: Any,
 ) -> httpx.Response:
     """Wrap `client.request(...)` with tenacity retries + 429 Retry-After.
+
+    If `adaptive` is provided, every response (success OR retryable) is
+    fed to its `record_response()` so the state machine can detect 5xx
+    clusters / 429 streaks / captcha and adjust throttle / cooldown.
+    Adaptive recording is best-effort: we never let a recording exception
+    abort the request flow. When `adaptive` is None or its
+    `config.enabled` is False, behaviour is identical to v1.
 
     Raises:
         ChannelAbort: after MAX_429_RETRIES consecutive 429s.
@@ -90,6 +129,8 @@ async def request_with_retry(
             RetryError unwrap).
     """
     consecutive_429 = 0
+    # Resolve adaptive limiter — explicit arg, else auto-detect on client.
+    adaptive_resolved = _resolve_adaptive(client, adaptive)
 
     try:
         async for attempt in AsyncRetrying(
@@ -102,7 +143,21 @@ async def request_with_retry(
             reraise=True,
         ):
             with attempt:
+                started = time.monotonic()
                 resp = await client.request(method, url, **request_kwargs)
+                latency_ms = (time.monotonic() - started) * 1000.0
+                # Best-effort adaptive recording — never let a recording
+                # error mask the actual request outcome.
+                if adaptive_resolved is not None:
+                    try:
+                        was_captcha = _looks_like_captcha(resp)
+                        await adaptive_resolved.record_response(
+                            status=resp.status_code,
+                            latency_ms=latency_ms,
+                            was_captcha=was_captcha,
+                        )
+                    except Exception as e:  # noqa: BLE001 — defensive, then logged
+                        logger.debug("adaptive_record_failed", err=str(e))
                 if resp.status_code == 429:
                     consecutive_429 += 1
                     if consecutive_429 >= MAX_429_RETRIES:
@@ -146,3 +201,18 @@ async def request_with_retry(
 
     # Unreachable — AsyncRetrying either returns or raises.
     raise RuntimeError("request_with_retry: fell through retry loop")  # pragma: no cover
+
+
+def _looks_like_captcha(resp: httpx.Response) -> bool:
+    """Detect a Cloudflare/Discord captcha response. Mirrors rest.py logic.
+
+    Captcha responses arrive with 401 or 403 + a JSON body containing one
+    of the marker keys. We sniff the raw bytes — never call resp.json()
+    here (it can raise; we want a cheap predicate)."""
+    if resp.status_code not in (401, 403):
+        return False
+    try:
+        body = resp.text
+    except Exception:  # noqa: BLE001 — body access best-effort
+        return False
+    return any(marker in body for marker in _CAPTCHA_MARKERS)

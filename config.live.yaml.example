@@ -43,6 +43,44 @@ http:
     # within minutes. Default is 10_000 — bump back to that after Phase 12.d
     # signs off.
     max_messages_per_scan: 200
+    # Baseline rates LOWERED in v2 (was 2.0 / 1.0) — more conservative under
+    # sustained scanning + backfill (see workspace plan §"Part A — A.1").
+    per_host_rate_per_sec:
+        discord.com/api: 1.0
+        cdn.discordapp.com: 0.5
+
+    # Adaptive rate limiter (NEW v2).
+    # Disabled by default — opt-in via `enabled: true` after a one-week canary
+    # on a non-critical burner. State machine: NORMAL → DEGRADED (40-70%
+    # reduction on 5xx clusters / latency spikes) → COOLDOWN (10-300s pause on
+    # 429 streak / captcha / 403 streak). Orthogonal: probabilistic circadian
+    # sleep window + periodic session breaks.
+    adaptive:
+        enabled: false
+        # DEGRADED state factor range (rate × U(low, high)). 0.30-0.60 = "reduce
+        # by 40-70% per workspace plan".
+        degraded_factor_range: [0.30, 0.60]
+        # Triggers
+        degrade_on_5xx_in_window: 3
+        degrade_on_latency_p95_ms: 4000
+        degrade_window_sec: 60
+        # DEGRADED → NORMAL: N consecutive successes
+        recover_after_successes: 30
+        # COOLDOWN triggers + duration
+        cooldown_on_consecutive_429: 5
+        cooldown_on_captcha: true
+        cooldown_on_403_streak: 3
+        cooldown_duration_sec: [10, 300]
+        # SESSION_BREAK
+        session_break_every_requests: 200
+        session_break_duration_sec: [60, 180]
+        # CIRCADIAN — operator-TZ probabilistic sleep window
+        circadian:
+            enabled: true
+            timezone: Europe/Prague
+            sleep_window: "02:00-08:00"
+            sleep_probability: 0.95
+            twilight_hours: 1.0
 
 discovery:
     # Stage 1 invite-discovery output lands here in production. For the live

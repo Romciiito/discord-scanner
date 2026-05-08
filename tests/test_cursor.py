@@ -118,6 +118,150 @@ def test_cursor_real_write_with_param_binding(tmp_state_root: Path) -> None:
 
 
 # ----------------------------------------------------------------------
+# v2 schema migration + bidirectional cursor (workspace plan §"Part A — A.3")
+# ----------------------------------------------------------------------
+
+
+def test_v2_columns_added_on_fresh_db(tmp_state_root: Path) -> None:
+    """A fresh init creates all v2 columns (oldest_seen, backfill_runs, etc.)."""
+    with CursorStore(tmp_state_root) as s:
+        cols = {row[1] for row in s._conn.execute("PRAGMA table_info(cursor)")}
+    expected_v2 = {
+        "oldest_seen_message_id",
+        "newest_seen_message_id",
+        "oldest_seen_at",
+        "backfill_complete",
+        "backfill_started_at",
+        "backfill_runs",
+    }
+    assert expected_v2.issubset(cols)
+
+
+def test_v2_migration_idempotent_on_double_init(tmp_state_root: Path) -> None:
+    """Init twice — migration must not error or duplicate columns."""
+    with CursorStore(tmp_state_root):
+        pass
+    # Re-open the same DB; PRAGMA-introspection guard should silently pass.
+    with CursorStore(tmp_state_root) as s:
+        cols = {row[1] for row in s._conn.execute("PRAGMA table_info(cursor)")}
+    assert "oldest_seen_message_id" in cols
+
+
+def test_v2_migration_against_legacy_v1_db(tmp_state_root: Path) -> None:
+    """Simulate a v1 DB by creating only the v1 columns, then opening with v2 code."""
+    import sqlite3
+
+    db_path = tmp_state_root / "cursor.sqlite"
+    tmp_state_root.mkdir(parents=True, exist_ok=True)
+    legacy = sqlite3.connect(db_path)
+    legacy.execute(
+        "CREATE TABLE cursor ("
+        "guild_id TEXT NOT NULL, "
+        "channel_id TEXT NOT NULL, "
+        "last_message_id TEXT, "
+        "updated_at TEXT NOT NULL, "
+        "PRIMARY KEY (guild_id, channel_id))"
+    )
+    legacy.execute(
+        "INSERT INTO cursor VALUES (?, ?, ?, ?)",
+        ("g1", "c1", "msg_legacy", "2026-01-01T00:00:00Z"),
+    )
+    legacy.commit()
+    legacy.close()
+
+    # Open with v2 code — additive migration runs.
+    with CursorStore(tmp_state_root) as s:
+        # Legacy data preserved
+        assert s.get("g1", "c1") == "msg_legacy"
+        # New columns present and at default values
+        frontier = s.get_frontier("g1", "c1")
+        assert frontier.last_message_id == "msg_legacy"
+        assert frontier.oldest_seen_message_id is None
+        assert frontier.backfill_complete is False
+        assert frontier.backfill_runs == 0
+
+
+def test_get_frontier_missing_returns_empty_frontier(tmp_state_root: Path) -> None:
+    with CursorStore(tmp_state_root) as s:
+        f = s.get_frontier("g1", "c1")
+    assert f.last_message_id is None
+    assert f.oldest_seen_message_id is None
+    assert f.backfill_complete is False
+
+
+def test_advance_keeps_newest_seen_in_sync(tmp_state_root: Path) -> None:
+    """advance() should also populate newest_seen_message_id."""
+    with CursorStore(tmp_state_root) as s:
+        s.advance("g1", "c1", "msg_500")
+        f = s.get_frontier("g1", "c1")
+    assert f.last_message_id == "msg_500"
+    assert f.newest_seen_message_id == "msg_500"
+
+
+def test_advance_backward_seeds_oldest(tmp_state_root: Path) -> None:
+    with CursorStore(tmp_state_root) as s:
+        s.advance_backward("g1", "c1", "100")
+        f = s.get_frontier("g1", "c1")
+    assert f.oldest_seen_message_id == "100"
+
+
+def test_advance_backward_monotonic_decreasing(tmp_state_root: Path) -> None:
+    """Passing a NEWER candidate id than current oldest must be ignored."""
+    with CursorStore(tmp_state_root) as s:
+        s.advance_backward("g1", "c1", "200")
+        # Try to "go back" to 300 — should be a no-op (300 > 200, can't be "older").
+        s.advance_backward("g1", "c1", "300")
+        f = s.get_frontier("g1", "c1")
+    assert f.oldest_seen_message_id == "200"
+
+
+def test_advance_backward_accepts_older_candidate(tmp_state_root: Path) -> None:
+    with CursorStore(tmp_state_root) as s:
+        s.advance_backward("g1", "c1", "200")
+        s.advance_backward("g1", "c1", "100")
+        f = s.get_frontier("g1", "c1")
+    assert f.oldest_seen_message_id == "100"
+
+
+def test_increment_backfill_runs_increments(tmp_state_root: Path) -> None:
+    with CursorStore(tmp_state_root) as s:
+        n1 = s.increment_backfill_runs("g1", "c1")
+        n2 = s.increment_backfill_runs("g1", "c1")
+        n3 = s.increment_backfill_runs("g1", "c1")
+    assert (n1, n2, n3) == (1, 2, 3)
+
+
+def test_mark_backfilled_sets_flag(tmp_state_root: Path) -> None:
+    with CursorStore(tmp_state_root) as s:
+        s.advance("g1", "c1", "msg_50")
+        s.mark_backfilled("g1", "c1")
+        f = s.get_frontier("g1", "c1")
+    assert f.backfill_complete is True
+
+
+def test_all_frontiers_returns_v2_view(tmp_state_root: Path) -> None:
+    with CursorStore(tmp_state_root) as s:
+        s.advance("g1", "c1", "100")
+        s.advance_backward("g1", "c1", "50")
+        rows = s.all_frontiers()
+    assert len(rows) == 1
+    gid, cid, frontier = rows[0]
+    assert (gid, cid) == ("g1", "c1")
+    assert frontier.last_message_id == "100"
+    assert frontier.oldest_seen_message_id == "50"
+
+
+def test_legacy_get_advance_still_work_after_v2_migration(tmp_state_root: Path) -> None:
+    """Back-compat: existing callers that only know `get`/`advance` keep working."""
+    with CursorStore(tmp_state_root) as s:
+        assert s.get("g1", "c1") is None
+        s.advance("g1", "c1", "msg_x")
+        assert s.get("g1", "c1") == "msg_x"
+        rows = s.all_rows()
+    assert rows == [("g1", "c1", "msg_x", rows[0][3])]
+
+
+# ----------------------------------------------------------------------
 # CursorLock — single-writer
 # ----------------------------------------------------------------------
 

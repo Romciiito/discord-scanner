@@ -14,7 +14,12 @@ import respx
 
 from discord_scanner.config import load_config
 from discord_scanner.fetch.jitter import daemon_next_sleep_seconds
-from discord_scanner.fetch.messages import fetch_channel_messages
+from discord_scanner.fetch.messages import (
+    BackfillStop,
+    BackfillTermination,
+    fetch_channel_messages,
+    fetch_channel_messages_backward,
+)
 from discord_scanner.fetch.pinned import fetch_channel_pinned
 from discord_scanner.fetch.threads import fetch_thread_messages
 from discord_scanner.models.message import Attachment, Message, Reaction
@@ -227,6 +232,293 @@ async def test_fetch_messages_passes_after_cursor(
 
     assert captured[0]["after"] == "msg_resume_42"
     assert captured[0]["limit"] == "100"
+
+
+# ----------------------------------------------------------------------
+# Backward / backfill fetcher (workspace plan §"Part A — A.3 Phase C")
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_fetch_backward_uses_before_param(tmp_config_yaml: Path) -> None:
+    """Resume cursor `before=<id>` is forwarded to the first request."""
+    cfg = load_config(tmp_config_yaml)
+    cfg.http.per_channel_delay_sec = (0.001, 0.002)
+    captured: list[dict] = []
+
+    async with httpx.AsyncClient() as client, respx.mock() as mock:
+        route = mock.get("https://discord.com/api/v10/channels/c1/messages")
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured.append(dict(request.url.params))
+            return httpx.Response(200, json=[])
+
+        route.mock(side_effect=handler)
+        async for _ in fetch_channel_messages_backward(
+            client, "c1", settings=cfg, before="msg_oldest_known_42"
+        ):
+            pass
+
+    assert captured[0]["before"] == "msg_oldest_known_42"
+    assert "after" not in captured[0]
+
+
+@pytest.mark.asyncio
+async def test_fetch_backward_terminates_on_empty_page(tmp_config_yaml: Path) -> None:
+    """Empty page = channel start reached. Should yield zero items."""
+    cfg = load_config(tmp_config_yaml)
+    cfg.http.per_channel_delay_sec = (0.001, 0.002)
+
+    async with httpx.AsyncClient() as client, respx.mock() as mock:
+        mock.get("https://discord.com/api/v10/channels/c1/messages").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+        ids = [
+            m["id"] async for m in fetch_channel_messages_backward(client, "c1", settings=cfg)
+        ]
+    assert ids == []
+
+
+@pytest.mark.asyncio
+async def test_fetch_backward_terminates_on_short_page(tmp_config_yaml: Path) -> None:
+    """A short page (<100) signals end-of-channel."""
+    cfg = load_config(tmp_config_yaml)
+    cfg.http.per_channel_delay_sec = (0.001, 0.002)
+    short_page = [{"id": f"{i:020d}"} for i in range(50)]
+
+    async with httpx.AsyncClient() as client, respx.mock() as mock:
+        mock.get("https://discord.com/api/v10/channels/c1/messages").mock(
+            return_value=httpx.Response(200, json=short_page)
+        )
+        ids = [
+            m["id"] async for m in fetch_channel_messages_backward(client, "c1", settings=cfg)
+        ]
+    assert len(ids) == 50
+
+
+@pytest.mark.asyncio
+async def test_fetch_backward_paginates_walking_back(tmp_config_yaml: Path) -> None:
+    """Each page's oldest id becomes the next page's `before=` cursor."""
+    cfg = load_config(tmp_config_yaml)
+    cfg.http.per_channel_delay_sec = (0.001, 0.002)
+    captured: list[dict] = []
+
+    page_a = [{"id": f"{i:020d}"} for i in range(900, 1000)]  # full page (newer)
+    page_b = [{"id": f"{i:020d}"} for i in range(800, 900)]  # full page
+    page_c = [{"id": f"{i:020d}"} for i in range(750, 800)]  # short page → end
+
+    async with httpx.AsyncClient() as client, respx.mock() as mock:
+        route = mock.get("https://discord.com/api/v10/channels/c1/messages")
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            params = dict(request.url.params)
+            captured.append(params)
+            n = len(captured)
+            if n == 1:
+                return httpx.Response(200, json=page_a)
+            if n == 2:
+                return httpx.Response(200, json=page_b)
+            return httpx.Response(200, json=page_c)
+
+        route.mock(side_effect=handler)
+
+        ids = [
+            m["id"] async for m in fetch_channel_messages_backward(client, "c1", settings=cfg)
+        ]
+
+    # Yielded count: 100 + 100 + 50 = 250.
+    assert len(ids) == 250
+    # First request had no `before`; subsequent requests use the prior page's
+    # oldest id (post-numeric-sort, smallest is "00...0900" then "00...0800").
+    assert "before" not in captured[0]
+    assert captured[1]["before"] == f"{900:020d}"
+    assert captured[2]["before"] == f"{800:020d}"
+
+
+@pytest.mark.asyncio
+async def test_fetch_backward_respects_cap(tmp_config_yaml: Path) -> None:
+    cfg = load_config(tmp_config_yaml)
+    cfg.http.per_channel_delay_sec = (0.001, 0.002)
+    full_page = [{"id": f"{i:020d}"} for i in range(900, 1000)]
+
+    async with httpx.AsyncClient() as client, respx.mock() as mock:
+        mock.get("https://discord.com/api/v10/channels/c1/messages").mock(
+            return_value=httpx.Response(200, json=full_page)
+        )
+        ids = [
+            m["id"]
+            async for m in fetch_channel_messages_backward(
+                client, "c1", settings=cfg, max_messages=42
+            )
+        ]
+    assert len(ids) == 42
+
+
+# ----------------------------------------------------------------------
+# Channel-start polish: BackfillTermination + STUCK_CURSOR + SHORT_PAGE
+# (workspace plan §"Part A — A.3" / AGENT-TEAM-WORKPLAN §A.3)
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_fetch_backward_empty_page_signals_channel_start(
+    tmp_config_yaml: Path,
+) -> None:
+    """Empty page → CHANNEL_START + channel_start_confirmed=True."""
+    cfg = load_config(tmp_config_yaml)
+    cfg.http.per_channel_delay_sec = (0.001, 0.002)
+
+    result = BackfillTermination()
+    async with httpx.AsyncClient() as client, respx.mock() as mock:
+        mock.get("https://discord.com/api/v10/channels/c1/messages").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+        ids = [
+            m["id"]
+            async for m in fetch_channel_messages_backward(
+                client, "c1", settings=cfg, result=result
+            )
+        ]
+    assert ids == []
+    assert result.reason == BackfillStop.CHANNEL_START
+    assert result.channel_start_confirmed is True
+
+
+@pytest.mark.asyncio
+async def test_fetch_backward_short_page_does_not_confirm(
+    tmp_config_yaml: Path,
+) -> None:
+    """Short page (<100) → SHORT_PAGE + NOT confirmed.
+
+    Could be a deletion gap, NOT confirmed channel start. Caller MUST NOT
+    mark_backfilled — next scan retries from the new oldest cursor.
+    """
+    cfg = load_config(tmp_config_yaml)
+    cfg.http.per_channel_delay_sec = (0.001, 0.002)
+    short_page = [{"id": f"{i:020d}"} for i in range(50)]
+
+    result = BackfillTermination()
+    async with httpx.AsyncClient() as client, respx.mock() as mock:
+        mock.get("https://discord.com/api/v10/channels/c1/messages").mock(
+            return_value=httpx.Response(200, json=short_page)
+        )
+        ids = [
+            m["id"]
+            async for m in fetch_channel_messages_backward(
+                client, "c1", settings=cfg, result=result
+            )
+        ]
+    assert len(ids) == 50
+    assert result.reason == BackfillStop.SHORT_PAGE
+    assert result.channel_start_confirmed is False
+
+
+@pytest.mark.asyncio
+async def test_fetch_backward_stuck_cursor_confirms_channel_start(
+    tmp_config_yaml: Path,
+) -> None:
+    """Discord returns a full page whose oldest id == cursor we sent →
+    STUCK_CURSOR + channel_start_confirmed=True.
+
+    Without this guard, the loop would fetch the same page forever because
+    the cursor never advances past the floor message.
+    """
+    cfg = load_config(tmp_config_yaml)
+    cfg.http.per_channel_delay_sec = (0.001, 0.002)
+    # 100 messages, oldest id == "00000000000000000100".
+    full_page = [{"id": f"{i:020d}"} for i in range(100, 200)]
+
+    result = BackfillTermination()
+    async with httpx.AsyncClient() as client, respx.mock() as mock:
+        mock.get("https://discord.com/api/v10/channels/c1/messages").mock(
+            return_value=httpx.Response(200, json=full_page)
+        )
+        # Operator passes `before=<oldest in this page>` — Discord returns the
+        # same page (cursor doesn't advance). This is the production edge
+        # case from the prior scanner.
+        ids = [
+            m["id"]
+            async for m in fetch_channel_messages_backward(
+                client,
+                "c1",
+                settings=cfg,
+                before=f"{100:020d}",  # SAME as oldest in batch
+                result=result,
+            )
+        ]
+    # Page yielded once, then terminated.
+    assert len(ids) == 100
+    assert result.reason == BackfillStop.STUCK_CURSOR
+    assert result.channel_start_confirmed is True
+
+
+@pytest.mark.asyncio
+async def test_fetch_backward_stuck_cursor_when_oldest_higher_than_cursor(
+    tmp_config_yaml: Path,
+) -> None:
+    """Discord returns a page whose oldest is >= the `before=` cursor →
+    treat as STUCK (cursor didn't advance backwards). Belt-and-braces."""
+    cfg = load_config(tmp_config_yaml)
+    cfg.http.per_channel_delay_sec = (0.001, 0.002)
+    # Oldest in page is 200; we sent before=150 → 200 is NEWER than 150,
+    # which is impossible from a sane Discord but defends against quirks.
+    page = [{"id": f"{i:020d}"} for i in range(200, 300)]
+
+    result = BackfillTermination()
+    async with httpx.AsyncClient() as client, respx.mock() as mock:
+        mock.get("https://discord.com/api/v10/channels/c1/messages").mock(
+            return_value=httpx.Response(200, json=page)
+        )
+        async for _ in fetch_channel_messages_backward(
+            client, "c1", settings=cfg, before=f"{150:020d}", result=result
+        ):
+            pass
+    assert result.reason == BackfillStop.STUCK_CURSOR
+    assert result.channel_start_confirmed is True
+
+
+@pytest.mark.asyncio
+async def test_fetch_backward_cap_reached_does_not_confirm(
+    tmp_config_yaml: Path,
+) -> None:
+    cfg = load_config(tmp_config_yaml)
+    cfg.http.per_channel_delay_sec = (0.001, 0.002)
+    full_page = [{"id": f"{i:020d}"} for i in range(900, 1000)]
+
+    result = BackfillTermination()
+    async with httpx.AsyncClient() as client, respx.mock() as mock:
+        mock.get("https://discord.com/api/v10/channels/c1/messages").mock(
+            return_value=httpx.Response(200, json=full_page)
+        )
+        ids = [
+            m["id"]
+            async for m in fetch_channel_messages_backward(
+                client, "c1", settings=cfg, max_messages=42, result=result
+            )
+        ]
+    assert len(ids) == 42
+    assert result.reason == BackfillStop.CAP_REACHED
+    assert result.channel_start_confirmed is False
+
+
+@pytest.mark.asyncio
+async def test_fetch_backward_back_compat_without_result_param(
+    tmp_config_yaml: Path,
+) -> None:
+    """Calling without `result=` still works exactly like v1 — the iterator
+    yields messages and terminates without surfacing termination metadata."""
+    cfg = load_config(tmp_config_yaml)
+    cfg.http.per_channel_delay_sec = (0.001, 0.002)
+
+    async with httpx.AsyncClient() as client, respx.mock() as mock:
+        mock.get("https://discord.com/api/v10/channels/c1/messages").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+        ids = [
+            m["id"]
+            async for m in fetch_channel_messages_backward(client, "c1", settings=cfg)
+        ]
+    assert ids == []  # back-compat path works fine
 
 
 @pytest.mark.asyncio

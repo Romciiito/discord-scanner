@@ -121,12 +121,29 @@ def version() -> None:
 
 
 @app.command(name="store-token")
-def store_token(ctx: typer.Context) -> None:
+def store_token(
+    ctx: typer.Context,
+    burner: Annotated[
+        str | None,
+        typer.Option(
+            "--burner",
+            help=(
+                "Multi-burner pool: store under this burner's keyring_username. "
+                "Must match an entry in `auth.burners[].keyring_username` when set."
+            ),
+        ),
+    ] = None,
+) -> None:
     """Prompt for burner token via getpass and store in the OS keyring.
 
     SEC-P0-01: keyring is the preferred source.
     SEC-P0-02: uses getpass.getpass() — never echoes the token.
     SEC-P0-06: refuses to store if the detected keyring backend is plaintext.
+
+    Multi-burner (M.1): `--burner <username>` writes under a specific
+    burner's credential. The username MUST be whitelisted in
+    `auth.burners[].keyring_username`; this protects against typos that
+    would silently store a token under a stranger's keyring entry.
     """
     cli_ctx: _CliContext = ctx.obj
     service = "discord-scanner"
@@ -136,8 +153,30 @@ def store_token(ctx: typer.Context) -> None:
             s = load_config(cli_ctx.config_path)
             service = s.auth.keyring_service
             username = s.auth.keyring_username
+            if burner is not None:
+                whitelist = {b.keyring_username for b in s.auth.burners}
+                if not whitelist:
+                    console.print(
+                        "[red]refusing:[/red] --burner is set but "
+                        "auth.burners is empty in the config."
+                    )
+                    raise typer.Exit(1)
+                if burner not in whitelist:
+                    console.print(
+                        f"[red]refusing:[/red] --burner {burner!r} is not in "
+                        f"auth.burners (whitelist={sorted(whitelist)})."
+                    )
+                    raise typer.Exit(1)
+                username = burner
+                # Per-burner keyring_service override (falls back to global).
+                for b in s.auth.burners:
+                    if b.keyring_username == burner and b.keyring_service:
+                        service = b.keyring_service
+                        break
         except ConfigError as e:
             get_logger().warning("store_token_fallback_to_defaults", err=str(e))
+            if burner is not None:
+                username = burner
 
     try:
         import keyring as _kr
@@ -199,6 +238,8 @@ def resolve(
         TokenInvalid,
         load_enriched_invites,
         resolve_invite,
+        resolve_invites_input_path,
+        select_invite_codes,
     )
     from discord_scanner.logging_conf import redact_invite_code
     from discord_scanner.session.auth import (
@@ -216,11 +257,16 @@ def resolve(
         codes = [invite]
     else:
         codes.extend(settings.discovery.manual_invites)
-        enriched = load_enriched_invites(settings.discovery.invites_input)
-        for rec in enriched:
-            c = rec.get("invite_code")
-            if isinstance(c, str):
-                codes.append(c)
+        # Prefer Stage 1.5 enriched feed over bare invites.json when both exist.
+        invites_path = resolve_invites_input_path(settings.discovery.invites_input)
+        enriched = load_enriched_invites(invites_path)
+        codes.extend(
+            select_invite_codes(
+                enriched,
+                intent_allowlist=settings.discovery.filter.intent_allowlist,
+                min_confidence=settings.discovery.filter.min_confidence,
+            )
+        )
     codes = sorted(set(codes))
     if not codes:
         console.print("[yellow]no invite codes to resolve.[/yellow]")
@@ -350,11 +396,160 @@ def list_guilds(ctx: typer.Context) -> None:
 
 
 @app.command()
+def discover(
+    ctx: typer.Context,
+    update_scopes: Annotated[
+        bool,
+        typer.Option(
+            "--update-scopes",
+            help="Auto-write unambiguous matches into scopes/*.yaml::guilds.",
+        ),
+    ] = False,
+    scopes_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--scopes-dir",
+            help="Override scopes/ location. Default: <project_root>/scopes/",
+        ),
+    ] = None,
+    dry_run_apply: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run-apply",
+            help="With --update-scopes, log writes but do not modify files.",
+        ),
+    ] = False,
+) -> None:
+    """Resolve enriched invites → guild_ids → group by scope intent_allowlist.
+
+    Bridges Stage 1 (`civit-hf-scanner`) → Stage 2 → `scopes/*.yaml`.
+    Stage 1 cannot emit guild_ids (no Discord API by design); Stage 2's
+    `resolve_invite()` does the lookup.
+
+    Reports four buckets:
+      - AUTO-ROUTE: invite's `intent` matches exactly ONE scope's
+        `intent_allowlist`. Safe to auto-add with `--update-scopes`.
+      - AMBIGUOUS: multiple scopes match. Operator chooses.
+      - NO MATCH: no scope's intent_allowlist contains this intent.
+      - ALREADY MAPPED: guild already in some scope's `guilds: []`.
+
+    `--update-scopes` writes ONLY the AUTO-ROUTE bucket. Ambiguous and
+    unmatched guilds are NEVER auto-written.
+    """
+    import asyncio
+
+    from discord_scanner.scan import (
+        apply_discover_report_to_scopes,
+        discover_guilds,
+        load_scope_profiles,
+        render_discover_report_table,
+    )
+    from discord_scanner.session.auth import (
+        PlaintextKeyringRefused,
+        TokenNotFound,
+        load_token,
+    )
+    from discord_scanner.session.rest import make_client
+
+    settings = _require_config(ctx)
+    cli_ctx: _CliContext = ctx.obj
+
+    # Resolve scopes_dir: CLI override > project-root sibling of state_root > "scopes"
+    if scopes_dir is None:
+        candidate = settings.run.state_root.parent / "scopes"
+        scopes_dir = candidate if candidate.exists() else Path("scopes")
+    if not scopes_dir.exists():
+        console.print(
+            f"[yellow]scopes dir {scopes_dir} not found — nothing to map against.[/yellow]"
+        )
+        raise typer.Exit(1)
+
+    if cli_ctx.dry_run:
+        console.print(
+            f"[bold]dry-run discover plan[/bold]\n"
+            f"  invites_input  = {settings.discovery.invites_input}\n"
+            f"  scopes_dir     = {scopes_dir}\n"
+            f"  intent_filter  = {settings.discovery.filter.intent_allowlist}\n"
+            f"  min_confidence = {settings.discovery.filter.min_confidence}\n"
+            f"  update_scopes  = {update_scopes}"
+        )
+        raise typer.Exit(0)
+
+    try:
+        token, _source = load_token(settings)
+    except (PlaintextKeyringRefused, TokenNotFound) as e:
+        console.print(f"[red]token error:[/red] {e}")
+        raise typer.Exit(1) from e
+
+    scope_map = load_scope_profiles(scopes_dir)
+    if not scope_map.profiles_by_id:
+        console.print(f"[yellow]no scope profiles loaded from {scopes_dir}[/yellow]")
+        raise typer.Exit(1)
+
+    async def _run() -> None:
+        client = make_client(settings, token, state_root=settings.run.state_root)
+        try:
+            report = await discover_guilds(
+                client, settings, scope_map, state_root=settings.run.state_root
+            )
+        finally:
+            await client.aclose()
+
+        console.print(render_discover_report_table(report))
+
+        if update_scopes:
+            added = apply_discover_report_to_scopes(
+                report, scopes_dir, dry_run=dry_run_apply
+            )
+            if added:
+                summary = ", ".join(f"{s}: +{n}" for s, n in sorted(added.items()))
+                prefix = "[cyan]would add[/cyan]" if dry_run_apply else "[green]added[/green]"
+                console.print(f"\n{prefix} {summary}")
+            else:
+                console.print("\n[dim]no changes to apply (auto_route empty or all already mapped)[/dim]")
+
+    asyncio.run(_run())
+    raise typer.Exit(0)
+
+
+@app.command()
 def scan(
     ctx: typer.Context,
     guild: Annotated[str | None, typer.Option("--guild", help="Restrict to one guild_id")] = None,
+    burner: Annotated[
+        str | None,
+        typer.Option(
+            "--burner",
+            help=(
+                "Multi-burner pool: restrict the scan to ONE burner from "
+                "`auth.burners[]`. Required for Topology 2 manual rotation."
+            ),
+        ),
+    ] = None,
 ) -> None:
-    """Full scan of all configured guilds. Supports `--dry-run` (plan only, no network)."""
+    """Full scan of all configured guilds. Supports `--dry-run` (plan only, no network).
+
+    Live scan (A.0.5): delegates to `scan.orchestrator.run_one_pass`. Maps
+    `FatalScanError.code` to CLI exit status (1 = generic fatal, 2 = captcha
+    / SSRF, 3 = token invalid). Per-channel errors are isolated inside the
+    orchestrator and don't affect exit status — operator inspects the logs
+    + `discord-scanner status` to see per-channel skip reasons.
+
+    Multi-burner (M.1): when `auth.burners[]` is non-empty, the orchestrator
+    iterates burners sequentially. `--burner <username>` filters to one
+    (Topology 2 manual rotation: operator switches network interface
+    between burner runs). Token is loaded per-burner; the legacy single-
+    burner token loader is bypassed.
+    """
+    import asyncio
+
+    from discord_scanner.scan import FatalScanError, run_one_pass
+    from discord_scanner.session.auth import (
+        PlaintextKeyringRefused,
+        TokenNotFound,
+        load_token,
+    )
+
     settings = _require_config(ctx)
     cli_ctx: _CliContext = ctx.obj
     if cli_ctx.dry_run:
@@ -362,11 +557,63 @@ def scan(
         for line in plan:
             console.print(line)
         raise typer.Exit(0)
+
+    multi_burner = bool(settings.auth.burners)
+    if burner is not None and not multi_burner:
+        console.print(
+            "[red]refusing:[/red] --burner requires `auth.burners[]` "
+            "to be populated in the config."
+        )
+        raise typer.Exit(1)
+    if burner is not None:
+        whitelist = {b.keyring_username for b in settings.auth.burners}
+        if burner not in whitelist:
+            console.print(
+                f"[red]refusing:[/red] --burner {burner!r} not in "
+                f"auth.burners (known: {sorted(whitelist)})."
+            )
+            raise typer.Exit(1)
+
+    # Token load — single-burner mode loads upfront; multi-burner mode
+    # defers to `run_one_pass`, which calls `load_token_for_burner`
+    # per-iteration. The dummy SecretStr below is never used by the
+    # multi-burner path (the orchestrator ignores it).
+    if multi_burner:
+        from pydantic import SecretStr
+
+        token = SecretStr("multi-burner-placeholder")  # noqa: S106 — placeholder
+    else:
+        try:
+            token, _source = load_token(settings)
+        except (PlaintextKeyringRefused, TokenNotFound) as e:
+            console.print(f"[red]token error:[/red] {e}")
+            raise typer.Exit(1) from e
+
+    try:
+        results = asyncio.run(
+            run_one_pass(
+                settings, token, guild_filter=guild, burner_filter=burner
+            )
+        )
+    except FatalScanError as e:
+        console.print(f"[red]scan aborted ({e.reason}):[/red] {e}")
+        raise typer.Exit(e.code) from e
+
+    # Per-guild summary line for operator scan-after-scan visibility.
+    total_msgs = sum(r.messages_fetched for r in results)
+    total_channels_ok = sum(r.channels_scanned for r in results)
+    total_channels_skipped = sum(r.channels_skipped for r in results)
     console.print(
-        "[yellow]not implemented:[/yellow] `scan` (live) is delivered in Phases 4–9. "
-        "Use `--dry-run` to preview the plan. See workplan.md."
+        f"[green]scan complete[/green]: "
+        f"{len(results)} guild(s), {total_channels_ok} channel(s), "
+        f"{total_msgs} message(s)"
+        + (
+            f", [yellow]{total_channels_skipped} channel(s) skipped[/yellow]"
+            if total_channels_skipped
+            else ""
+        )
     )
-    raise typer.Exit(2)
+    raise typer.Exit(0)
 
 
 def _build_dry_run_plan(settings: Settings, guild_filter: str | None) -> list[str]:
@@ -409,16 +656,47 @@ def daemon(
     import asyncio
 
     from discord_scanner.daemon import DaemonLoop
+    from discord_scanner.scan import FatalScanError, run_one_pass
+    from discord_scanner.session.auth import (
+        PlaintextKeyringRefused,
+        TokenNotFound,
+        load_token,
+    )
 
     settings = _require_config(ctx)
 
-    async def _stub_scan(_s: Settings) -> None:
-        # P10 wiring replaces this with the full per-guild scan closure.
-        # For P9 smoke, the daemon loop is exercised in tests with a
-        # synthetic scan function; production wiring lands with P10.
-        get_logger().info("daemon_scan_stub", note="real scan wired in P10")
+    # M.1.e — daemon refuse for multi-burner pools. The daemon cannot
+    # switch OS-level network interface between burners, so Topology 2
+    # would all hit the same egress IP and defeat the entire point of
+    # multiple burners. Operator must run `scan --burner <name>` manually
+    # under each burner's network context.
+    if len(settings.auth.burners) > 1:
+        console.print(
+            "[red]daemon mode disabled when auth.burners has >1 entry.[/red] "
+            "Use scan --burner <name> manually for Topology 2."
+        )
+        raise typer.Exit(1)
 
-    loop = DaemonLoop(settings, _stub_scan)
+    try:
+        token, _source = load_token(settings)
+    except (PlaintextKeyringRefused, TokenNotFound) as e:
+        console.print(f"[red]token error:[/red] {e}")
+        raise typer.Exit(1) from e
+
+    async def _real_scan(s: Settings) -> None:
+        """Per-cycle scan closure injected into DaemonLoop. FatalScanError
+        propagates upward; DaemonLoop logs and continues to the next cycle
+        (same recovery semantics as any other scan exception)."""
+        try:
+            await run_one_pass(s, token)
+        except FatalScanError:
+            # The daemon's own loop logs scan failures via its
+            # `last_scan_error` field; let the exception propagate so it's
+            # captured cleanly. The daemon does NOT exit on fatal — operator
+            # decides via SIGTERM after seeing the log.
+            raise
+
+    loop = DaemonLoop(settings, _real_scan)
     cap = 1 if once else max_iterations
     try:
         asyncio.run(loop.run_forever(max_iterations=cap))
@@ -433,11 +711,22 @@ def daemon(
 
 
 @app.command()
-def status(ctx: typer.Context) -> None:
+def status(
+    ctx: typer.Context,
+    show_backfill: bool = typer.Option(
+        True,
+        "--backfill/--no-backfill",
+        help="Show v2 backfill frontier columns (oldest_seen, backfill_runs, complete).",
+    ),
+) -> None:
     """Print cursor state per channel. `--offline` makes this read-only.
 
     SEC-P0 adjacent (Phase 5): reads `state/cursor.sqlite` without acquiring
     the write lock, so a running scan is not disturbed.
+
+    v2 (default ON): adds backfill frontier columns (oldest_seen,
+    backfill_runs, backfill_complete). Pass `--no-backfill` to suppress
+    them and get the legacy 4-column view.
     """
     from rich.table import Table
 
@@ -455,7 +744,42 @@ def status(ctx: typer.Context) -> None:
         console.print("[yellow]no cursor state yet — run a scan first.[/yellow]")
         raise typer.Exit(0)
     with CursorStore(state_root) as store:
-        rows = store.all_rows()
+        if show_backfill:
+            frontiers = store.all_frontiers()
+        else:
+            frontiers = []
+            rows = store.all_rows()
+    if show_backfill:
+        if not frontiers:
+            console.print("[dim]cursor is empty.[/dim]")
+            raise typer.Exit(0)
+        table = Table(title=f"cursor frontiers ({len(frontiers)})")
+        table.add_column("guild_id", overflow="fold")
+        table.add_column("channel_id", overflow="fold")
+        table.add_column("newest_seen", overflow="fold")
+        table.add_column("oldest_seen", overflow="fold")
+        table.add_column("backfill_runs", justify="right")
+        table.add_column("complete", justify="center")
+        n_complete = 0
+        n_in_progress = 0
+        n_unstarted = 0
+        for g, c, f in frontiers:
+            newest = f.newest_seen_message_id or f.last_message_id or "-"
+            oldest = f.oldest_seen_message_id or "-"
+            done = "✓" if f.backfill_complete else ("…" if f.backfill_runs > 0 else "-")
+            if f.backfill_complete:
+                n_complete += 1
+            elif f.backfill_runs > 0:
+                n_in_progress += 1
+            else:
+                n_unstarted += 1
+            table.add_row(g, c, newest, oldest, str(f.backfill_runs), done)
+        console.print(table)
+        console.print(
+            f"[dim]backfill: {n_complete} complete, "
+            f"{n_in_progress} in-progress, {n_unstarted} unstarted.[/dim]"
+        )
+        raise typer.Exit(0)
     if not rows:
         console.print("[dim]cursor is empty.[/dim]")
         raise typer.Exit(0)

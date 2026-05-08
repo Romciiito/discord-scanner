@@ -238,6 +238,139 @@ def test_load_enriched_invites_not_a_list(tmp_path: Path) -> None:
     assert load_enriched_invites(p) == []
 
 
+# ----------------------------------------------------------------------
+# Stage 1.5 enriched-form support (workspace plan §"STAGE 1 → STAGE 2 CONTRACT")
+# ----------------------------------------------------------------------
+
+from discord_scanner.discovery.invite_resolve import (
+    resolve_invites_input_path,
+    select_invite_codes,
+)
+
+
+def test_load_enriched_form_unwraps_invites_array(tmp_path: Path) -> None:
+    """Stage 1.5 form: {"metadata": {...}, "invites": [...]}."""
+    p = tmp_path / "invites.enriched.json"
+    p.write_text(
+        json.dumps(
+            {
+                "metadata": {
+                    "claude_model": "claude-haiku-4-5-20251001",
+                    "total_tokens_input": 3412,
+                    "estimated_usd": 0.0018,
+                },
+                "invites": [
+                    {"invite_code": "aaaa", "intent": "workflows", "confidence": 0.8},
+                    {"invite_code": "bbbb", "intent": "prompt_sharing", "confidence": 0.6},
+                ],
+            }
+        )
+    )
+    records = load_enriched_invites(p)
+    assert len(records) == 2
+    assert records[0]["invite_code"] == "aaaa"
+    assert records[1]["confidence"] == 0.6
+
+
+def test_load_enriched_form_dict_missing_invites_key(tmp_path: Path) -> None:
+    p = tmp_path / "wrong.json"
+    p.write_text(json.dumps({"metadata": {}, "not_invites": []}))
+    assert load_enriched_invites(p) == []
+
+
+def test_resolve_invites_input_path_prefers_enriched(tmp_path: Path) -> None:
+    bare = tmp_path / "invites.json"
+    enriched = tmp_path / "invites.enriched.json"
+    bare.write_text("[]")
+    enriched.write_text('{"metadata": {}, "invites": []}')
+    resolved = resolve_invites_input_path(bare)
+    assert resolved == enriched
+
+
+def test_resolve_invites_input_path_falls_back_to_bare(tmp_path: Path) -> None:
+    bare = tmp_path / "invites.json"
+    bare.write_text("[]")
+    # No invites.enriched.json sibling
+    resolved = resolve_invites_input_path(bare)
+    assert resolved == bare
+
+
+def test_resolve_invites_input_path_passthrough_for_other_names(tmp_path: Path) -> None:
+    """If operator points at a custom-named file, no preference logic kicks in."""
+    custom = tmp_path / "my-feed.json"
+    custom.write_text("[]")
+    # Even with a sibling that LOOKS enriched, the resolver keeps the original.
+    (tmp_path / "my-feed.enriched.json").write_text("[]")
+    assert resolve_invites_input_path(custom) == custom
+
+
+def test_select_invite_codes_bare_records_pass_through() -> None:
+    """ScoredInvite without intent/confidence: kept regardless of allowlist."""
+    records = [
+        {"invite_code": "aaaa", "score_pct": 90},
+        {"invite_code": "bbbb"},
+    ]
+    codes = select_invite_codes(
+        records, intent_allowlist=["workflows"], min_confidence=0.5
+    )
+    assert sorted(codes) == ["aaaa", "bbbb"]
+
+
+def test_select_invite_codes_drops_low_confidence() -> None:
+    records = [
+        {"invite_code": "aaaa", "intent": "workflows", "confidence": 0.4},
+        {"invite_code": "bbbb", "intent": "workflows", "confidence": 0.7},
+    ]
+    codes = select_invite_codes(
+        records, intent_allowlist=["workflows"], min_confidence=0.5
+    )
+    assert codes == ["bbbb"]
+
+
+def test_select_invite_codes_filters_by_intent() -> None:
+    records = [
+        {"invite_code": "aaaa", "intent": "workflows", "confidence": 0.9},
+        {"invite_code": "bbbb", "intent": "paid_nsfw", "confidence": 0.9},
+        {"invite_code": "cccc", "intent": "tutorials", "confidence": 0.9},
+    ]
+    codes = select_invite_codes(
+        records,
+        intent_allowlist=["workflows", "tutorials"],
+        min_confidence=0.0,
+    )
+    assert sorted(codes) == ["aaaa", "cccc"]
+
+
+def test_select_invite_codes_empty_allowlist_skips_intent_check() -> None:
+    """An empty allowlist means 'no intent filter' — keep all enriched records."""
+    records = [
+        {"invite_code": "aaaa", "intent": "paid_nsfw", "confidence": 0.9},
+        {"invite_code": "bbbb", "intent": "unknown", "confidence": 0.9},
+    ]
+    codes = select_invite_codes(records, intent_allowlist=[], min_confidence=0.0)
+    assert sorted(codes) == ["aaaa", "bbbb"]
+
+
+def test_select_invite_codes_dedupes() -> None:
+    records = [
+        {"invite_code": "aaaa", "intent": "workflows", "confidence": 0.9},
+        {"invite_code": "aaaa", "intent": "workflows", "confidence": 0.8},
+    ]
+    codes = select_invite_codes(records, intent_allowlist=[], min_confidence=0.0)
+    assert codes == ["aaaa"]
+
+
+def test_select_invite_codes_skips_malformed() -> None:
+    records = [
+        {"invite_code": "aaaa", "intent": "workflows", "confidence": 0.9},
+        {"no_code": True},  # malformed
+        "not a dict",  # type: ignore[list-item]
+        {"invite_code": 42},  # wrong type
+    ]
+    codes = select_invite_codes(records, intent_allowlist=[], min_confidence=0.0)
+    assert codes == ["aaaa"]
+
+
 def test_load_enriched_invites_malformed_json(tmp_path: Path) -> None:
     p = tmp_path / "corrupt.json"
     p.write_text("{not json")
@@ -334,6 +467,124 @@ def test_filter_channels_by_name() -> None:
     channels = [Channel(id="c1", type=0, name="general"), Channel(id="c2", type=0, name="spam")]
     result = filter_channels(channels, exclude_channels=["spam"])
     assert [c.id for c in result] == ["c1"]
+
+
+# --- v2 selector tests (workspace plan §"Part A — A.2") ---------------------
+
+from discord_scanner.discovery.channels import GuildSelector
+
+
+def _make_guild_with_categories() -> list[Channel]:
+    """Build a realistic mini-guild: 2 categories, 6 channels under them."""
+    return [
+        # Categories
+        Channel(id="cat-art", type=4, name="🎨 art"),
+        Channel(id="cat-tools", type=4, name="🤖 AI tools"),
+        # Children of "🎨 art"
+        Channel(id="ch-show", type=0, name="showcase", parent_id="cat-art"),
+        Channel(id="ch-loras", type=0, name="lora-share", parent_id="cat-art"),
+        Channel(id="ch-art-share", type=0, name="art-share", parent_id="cat-art"),
+        # Children of "🤖 AI tools"
+        Channel(id="ch-tool-news", type=5, name="news", parent_id="cat-tools"),
+        Channel(id="ch-tool-help", type=0, name="help", parent_id="cat-tools"),
+        # Spam channel (should be excluded)
+        Channel(id="ch-spam", type=0, name="spam-zone", parent_id="cat-tools"),
+    ]
+
+
+def test_filter_channels_v2_category_resolves_by_name() -> None:
+    channels = _make_guild_with_categories()
+    selector = GuildSelector(categories=["🎨 art"])
+    result = filter_channels(channels, selector=selector)
+    # All scannable children of "🎨 art" — no parents, no other-category children.
+    assert {c.id for c in result} == {"ch-show", "ch-loras", "ch-art-share"}
+
+
+def test_filter_channels_v2_category_case_insensitive() -> None:
+    channels = _make_guild_with_categories()
+    selector = GuildSelector(categories=["🎨 ART"])  # uppercase
+    result = filter_channels(channels, selector=selector)
+    assert {c.id for c in result} == {"ch-show", "ch-loras", "ch-art-share"}
+
+
+def test_filter_channels_v2_channel_glob_matches() -> None:
+    channels = _make_guild_with_categories()
+    selector = GuildSelector(categories=["🎨 art"], channels=["*-share"])
+    result = filter_channels(channels, selector=selector)
+    assert {c.id for c in result} == {"ch-loras", "ch-art-share"}
+
+
+def test_filter_channels_v2_explicit_channel_name() -> None:
+    channels = _make_guild_with_categories()
+    selector = GuildSelector(categories=["🎨 art"], channels=["showcase"])
+    result = filter_channels(channels, selector=selector)
+    assert {c.id for c in result} == {"ch-show"}
+
+
+def test_filter_channels_v2_exclude_channels_glob() -> None:
+    channels = _make_guild_with_categories()
+    selector = GuildSelector(
+        categories=["🤖 AI tools"],
+        exclude_channels=["spam-*"],
+    )
+    result = filter_channels(channels, selector=selector)
+    assert "ch-spam" not in {c.id for c in result}
+    assert {c.id for c in result} == {"ch-tool-news", "ch-tool-help"}
+
+
+def test_filter_channels_v2_unknown_category_warns_when_fail_open(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    channels = _make_guild_with_categories()
+    selector = GuildSelector(categories=["🎵 music"], fail_open=True)
+    with caplog.at_level("WARNING"):
+        result = filter_channels(channels, selector=selector)
+    # No category matched → no children → empty result, no crash.
+    assert result == []
+
+
+def test_filter_channels_v2_unknown_category_raises_when_fail_closed() -> None:
+    channels = _make_guild_with_categories()
+    selector = GuildSelector(categories=["🎵 music"], fail_open=False)
+    with pytest.raises(ValueError, match="not found in guild"):
+        filter_channels(channels, selector=selector)
+
+
+def test_filter_channels_v2_unknown_channel_glob_warns_when_fail_open(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    channels = _make_guild_with_categories()
+    selector = GuildSelector(channels=["does-not-exist-*"], fail_open=True)
+    with caplog.at_level("WARNING"):
+        result = filter_channels(channels, selector=selector)
+    assert result == []
+
+
+def test_filter_channels_v2_no_category_searches_all() -> None:
+    """Empty `categories` + a glob → glob matches across all scannable channels."""
+    channels = _make_guild_with_categories()
+    selector = GuildSelector(channels=["*-share"])
+    result = filter_channels(channels, selector=selector)
+    assert {c.id for c in result} == {"ch-loras", "ch-art-share"}
+
+
+def test_filter_channels_v2_legacy_path_unchanged() -> None:
+    """When selector=None, behaviour is identical to v1."""
+    channels = [Channel(id="c1", type=0, name="general"), Channel(id="c2", type=2, name="voice")]
+    result = filter_channels(channels, exclude_channels=["voice"])
+    assert {c.id for c in result} == {"c1"}
+
+
+def test_filter_channels_v2_excludes_non_scannable_types() -> None:
+    """Even if a glob matches a type-2 channel, it's filtered out by SCANNABLE_CHANNEL_TYPES."""
+    channels = [
+        Channel(id="cat", type=4, name="lounge"),
+        Channel(id="voice", type=2, name="voice-1", parent_id="cat"),
+        Channel(id="text", type=0, name="text-1", parent_id="cat"),
+    ]
+    selector = GuildSelector(categories=["lounge"])
+    result = filter_channels(channels, selector=selector)
+    assert {c.id for c in result} == {"text"}
 
 
 @pytest.mark.asyncio

@@ -575,7 +575,15 @@ Final state: 257 tests pass, 85.79% coverage, ruff/format/mypy clean.
 | Phase 9 — Daemon + Scheduling + Retention | `✅ DONE` | 2026-04-25 | Daemon loop, retention prune, clean SIGINT |
 | Phase 10 — CI/CD | `✅ DONE` | 2026-04-25 | GitHub Actions matrix, grep guards, Dependabot, pip-audit, bandit |
 | Phase 11 — Final Review + Smoke | `✅ DONE` | 2026-04-25 | Code-reviewer pass (0 critical / 2 high fixed / 6 medium fixed); 257 tests green @ 85.79%; runbooks + README + acceptance mapping |
-| Phase 12 — Hardening + first live run | `[ ] In progress` (started 2026-04-25) | — | 12.a Chrome-UA probe ✅ (D1 + workflow); 12.b SBOM-on-tag CI step ✅; 12.c–12.f pending operator pre-flight + live run. Tracked in `../ROADMAP.md` (Stage 2+) and `../PROJECT_WORKPLAN.md` §"Phase 2.12" |
+| Phase 12 — Hardening + first live run | `[ ] In progress` (started 2026-04-25) | — | 12.a Chrome-UA probe ✅ (D1 + workflow); 12.b SBOM-on-tag CI step ✅; 12.c–12.f pending operator pre-flight + first multi-burner live run. Tracked in `../ROADMAP.md` (Stage 2+) and `../PROJECT_WORKPLAN.md` §"Phase 2.12" |
+| Phase 13 — Adaptive Rate Limiting (v2) | `✅ DONE` | 2026-04-26 | `session/adaptive.py` state machine NORMAL→DEGRADED→COOLDOWN + circadian + session breaks; +24 tests |
+| Phase 14 — Channel Selectors (v2) | `✅ DONE` | 2026-04-26 | `discovery/channels.py::filter_channels(selector=...)` w/ category/glob/exclude; +10 tests |
+| Phase 15 — Backward Backfill (v2) | `✅ DONE` | 2026-04-26 | bidirectional cursor schema; `fetch_channel_messages_backward`; STUCK_CURSOR / SHORT_PAGE / CHANNEL_START distinction; +16 tests |
+| Phase A — Live `scan` orchestrator (A.0–A.11) | `✅ DONE` | 2026-04-26 | `scan/orchestrator.py`; gateway wiring; scope loader + selector application; attachment download; threads (forum); discover bridge command; +30+ e2e tests |
+| Phase M — Multi-burner Topology 2 (M.1+M.2+M.3) | `✅ DONE` | 2026-04-26 | `BurnerConfig` + `auth.burners[]`; cursor `burner_id` column; `load_token_for_burner` per-burner env var; orchestrator iterates burners sequentially; CLI `scan --burner` + `store-token --burner`; daemon refused on >1 burners; scope→burner ownership via `ScopeProfile.burner`; per-burner `http_overrides` shallow-merged into a single Settings snapshot consumed by both REST `make_client` AND `DormantGateway` (SEC-P0-25 byte-for-byte parity); +11 tests |
+| Phase V — Video triage (silent GIF skip + non-GIF JSONL+MD sidecar) | `✅ DONE` | 2026-04-26 | `dump/video_triage.py`: `is_gif` (3 forms), `is_video`, `VideoTriageWriter` (atomic JSONL append), `write_video_triage_md` (high/medium/low buckets); orchestrator silent-skips GIFs at download time, triages non-GIF videos to `output/{guild_id}/{date}/video-triage.jsonl` + matching `.md`. Stage 2 NEVER downloads video bytes; +21 tests |
+
+**Test totals:** 257 → **393 passing** (+136 across Phases 13–V); zero regressions; CI grep guards green.
 
 ---
 

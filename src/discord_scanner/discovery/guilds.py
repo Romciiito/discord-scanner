@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import httpx
 
+from discord_scanner.discovery.invite_resolve import TokenInvalid
 from discord_scanner.logging_conf import get_logger
 from discord_scanner.models.discord import Guild
 from discord_scanner.session.retry import (
@@ -29,6 +30,12 @@ async def list_my_guilds(client: httpx.AsyncClient) -> list[Guild]:
     Wrapped in `request_with_retry` so 429 Retry-After + 5xx backoff are
     honoured (SEC-P0-15). On `ChannelAbort` (3 consecutive 429s) returns []
     so callers can degrade gracefully.
+
+    Raises `TokenInvalid` on 401 — same contract as
+    `discovery.invite_resolve.resolve_invite`. The CLI / orchestrator maps
+    this to exit code 3 (detected ban / invalid token). Don't silently
+    swallow a 401 here: every subsequent request would also 401 and the
+    operator wouldn't get a meaningful exit signal.
     """
     url = "https://discord.com/api/v10/users/@me/guilds"
     try:
@@ -41,6 +48,9 @@ async def list_my_guilds(client: httpx.AsyncClient) -> list[Guild]:
         # bubbling up. Caller logs the http error and continues.
         logger.warning("list_guilds_retries_exhausted", status=e.status)
         return []
+    if resp.status_code == 401:
+        logger.error("list_guilds_unauthorized")
+        raise TokenInvalid("401 Unauthorized on /users/@me/guilds")
     if resp.status_code >= 400:
         logger.warning("list_guilds_http_error", status=resp.status_code)
         return []

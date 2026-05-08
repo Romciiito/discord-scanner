@@ -83,6 +83,22 @@ retention:
 
 
 @pytest.fixture()
+def tmp_config_yaml_no_gateway(tmp_config_yaml: Path) -> Path:
+    """Variant of `tmp_config_yaml` with `gateway.enabled: false`.
+
+    The default `tmp_config_yaml` enables the gateway dormant session
+    (matching production CLAUDE.md MUST). E2E tests for the scan
+    orchestrator that don't mock WSS use this variant to skip the WS
+    handshake while still exercising the REST + cursor + dump flow.
+    Gateway-specific behaviour is tested in `tests/test_gateway.py`.
+    """
+    text = tmp_config_yaml.read_text(encoding="utf-8")
+    text = text.replace("gateway:\n  enabled: true", "gateway:\n  enabled: false")
+    tmp_config_yaml.write_text(text, encoding="utf-8")
+    return tmp_config_yaml
+
+
+@pytest.fixture()
 def mock_keyring(monkeypatch: pytest.MonkeyPatch) -> Iterator[MagicMock]:
     """Mock the real keyring module in-place so tests do not touch the OS
     credential store. Patches `keyring.get_keyring`, `set_password`, and the

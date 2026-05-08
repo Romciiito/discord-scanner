@@ -81,6 +81,90 @@ Exit codes: `0` success, `1` user/config error, `2` runtime error (incl. captcha
 
 ---
 
+## Ops tools (`tools/`)
+
+One-shot helpers that aren't part of the main CLI but reuse the same hardened
+client. They exist so the operator can prepare a `discovery.guilds[]` scope
+in `config.live.yaml` without hand-rolling YAML.
+
+### `tools/list_guilds_channels.py` — dump every joined guild + its scannable channels to CSV
+
+Calls `GET /users/@me/guilds` then `GET /guilds/{id}/channels` for every
+guild, filters to `SCANNABLE_CHANNEL_TYPES = {0, 5, 15}` (text + announcement
++ forum) and writes a pipe-delimited CSV:
+
+```
+guild_name|guild_id|channel_id|channel_name
+```
+
+Reuses `session.rest.make_client`, so the full Chrome UA header set, http/2,
+URL allowlist, structlog token redaction, captcha hard-abort and 429
+Retry-After handling are inherited automatically. Exit codes mirror
+`discord-scanner list-guilds` (`0` ok / `1` config / `2` captcha / `3` 401).
+
+```bash
+python tools/list_guilds_channels.py \
+    --config config.live.yaml \
+    --output guilds_channels.csv
+```
+
+### `tools/csv_to_scan_scope.py` — picked CSV → `discovery.guilds[]` YAML snippet
+
+Takes the CSV from above, optionally with a 5th column `pick` (cell value
+`1` / `x` / `y` / `yes` / `true` / `*` = include this row), groups by
+`guild_id`, deduplicates channel names, sorts deterministically, and emits a
+ready-to-paste snippet for `config.live.yaml`:
+
+```yaml
+discovery:
+  guilds:
+    - id: "..."
+      selectors:
+        channels:
+          - "showcase"
+          - "share-*"
+```
+
+`selectors.channels` are fnmatch globs matched against channel names at scan
+time (case-insensitive, v2 `GuildSelectorEntry` path). If two channels in
+one guild share a name, the tool warns on stderr — both will be picked up
+unless you edit them out of the CSV first. If the CSV has no `pick` column,
+every row is included.
+
+```bash
+python tools/csv_to_scan_scope.py \
+    --input guilds_channels.csv \
+    --output scope_snippet.yaml
+```
+
+### Operator workflow with Claude Code
+
+The two tools chain into a "select scope by ticking checkboxes" workflow.
+On a fresh machine, open a Claude Code session in this repo and say one of:
+
+- *vygeneruj mi prázdné CSV s guildy a kanály*
+- *list my guilds and channels into a CSV*
+- *generate the guilds-channels CSV*
+
+A correctly-briefed Claude will:
+
+1. Verify `config.live.yaml` exists in the repo root and `auth.token_source`
+   resolves to a burner token (keyring entry, `.env` `DISCORD_TOKEN`, or
+   `auth.discord_token` last-resort). If anything is missing, stop and ask.
+2. Run `python tools/list_guilds_channels.py --config config.live.yaml --output guilds_channels.csv`.
+3. Hand `guilds_channels.csv` back. **You** add a `pick` column with `1` on
+   every row you want scanned, save back as pipe-delimited.
+4. Run `python tools/csv_to_scan_scope.py --input guilds_channels.csv --output scope_snippet.yaml`.
+5. Show the snippet; you paste it under `discovery:` in `config.live.yaml`.
+
+Only step 3 is manual. Step 1 is the safety gate — Claude must never invent
+or paste a token; the burner token always lives in keyring or `.env` on the
+target machine, never in chat. If Claude is running on a machine whose IP
+hasn't been used by this burner before, expect a captcha hard-abort (exit 2)
+and abort the warm-up rather than retrying.
+
+---
+
 ## Security baseline
 
 - **TLS verify=True** everywhere; HTTP/2 mandatory; URL allowlist
@@ -132,6 +216,8 @@ raw token / invite leakage).
   `cli.py`, `config.py`, `daemon.py`, `retention.py`, `logging_conf.py`, `_paths.py`.
 - `tests/` — unit + integration suites; `tests/e2e/test_smoke.py` is the full mocked
   end-to-end pass.
+- `tools/` — one-shot operator helpers (see "Ops tools" above): `list_guilds_channels.py`
+  + `csv_to_scan_scope.py`.
 - `docs/claude/` — read on-demand from `CLAUDE.md`'s pointer table.
 - `workplan.md` — phase-by-phase build log (Phases 0–10 ✅; Phase 11 in progress).
 - `spec.md`, `seed-spec.md`, `security-model.md`, `requirements.md`, `decisions.md` —

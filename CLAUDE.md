@@ -27,6 +27,7 @@ Stage 2 — burner-token Discord scanner producing raw JSONL dumps for Stage 3 c
 | `docs/claude/acceptance.md` | Verify the 15 acceptance criteria from `spec.md §11` still map to passing tests after a change |
 | `../ROADMAP.md` | See where Stage 2 fits in the four-stage plan, what's next (Phase 12 hardening, Stage 3 bootstrap), and which TODOs are carried forward |
 | `../PROJECT_WORKPLAN.md` | Authoritative phase-by-phase build plan across all four stages. Read before picking what to work on next. Sub-phases, file structure, done definitions, sequencing rules, risk register |
+| `README.md` §"Ops tools" | The operator asks to **dump guilds + channels into a CSV**, prepare a `discovery.guilds[]` scope, or says "vygeneruj prázdné CSV" / "list my guilds and channels" — read this section, follow the 5-step workflow exactly. Never paste a token; rely on `config.live.yaml` + keyring or `.env`. |
 
 ---
 

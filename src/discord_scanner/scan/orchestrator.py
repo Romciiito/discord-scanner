@@ -46,7 +46,7 @@ from pydantic import SecretStr, ValidationError
 from discord_scanner.config import BurnerHttpOverrides, Settings
 from discord_scanner.cursor.lock import CursorLock
 from discord_scanner.cursor.state import CursorStore
-from discord_scanner.discovery.channels import filter_channels, list_channels
+from discord_scanner.discovery.channels import GuildSelector, filter_channels, list_channels
 from discord_scanner.discovery.guilds import list_my_guilds
 from discord_scanner.discovery.forums import list_archived_public_threads
 from discord_scanner.dump.jsonl_writer import write_jsonl
@@ -73,7 +73,7 @@ from discord_scanner.logging_conf import get_logger
 from discord_scanner.models.discord import Channel
 from discord_scanner.models.message import Message
 from discord_scanner.cursor.lock import CursorConcurrencyError
-from discord_scanner.scan.scopes import ScopeMap, load_scope_profiles
+from discord_scanner.scan.scopes import ScopeMap, ScopeProfile, load_scope_profiles
 from discord_scanner.discovery.invite_resolve import TokenInvalid
 from discord_scanner.session.captcha import CaptchaAborted
 from discord_scanner.session.gateway import (
@@ -282,6 +282,39 @@ async def _open_shared_resources(
         candidate = burner_settings.run.state_root.parent / "scopes"
         scopes_dir = candidate if candidate.exists() else Path("scopes")
     scope_map = load_scope_profiles(scopes_dir)
+
+    # Wire `config.discovery.guilds[]` into scope_map. README and seed-spec
+    # promise that `tools/csv_to_scan_scope.py` output (pasted under
+    # `discovery.guilds[]`) drives per-guild channel selection at scan-time;
+    # without this synthesis the orchestrator would only see explicit
+    # `scopes/*.yaml` profiles and treat all other guilds as unscoped
+    # (fail-open → scan everything). Explicit scope profiles still win.
+    for entry in burner_settings.discovery.guilds:
+        if not entry.id or entry.id in scope_map.guild_to_scope:
+            continue
+        synthetic_scope_id = f"__discovery_{entry.id}"
+        scope_map.profiles_by_id[synthetic_scope_id] = ScopeProfile(
+            scope_id=synthetic_scope_id,
+            guilds=[entry.id],
+            allowed_categories=[],
+            allowed_pipeline_kinds=["t2i"],  # placeholder; unused at scan time
+            allowed_arch_families=[],
+            keep_threshold=0.55,
+            folder_prefix="",
+            tag_prefix="topic/discovery",
+            nsfw_policy="keep",
+            vault="main",
+            persona_anchor_id=None,
+            intent_allowlist=[],
+            selector=GuildSelector(
+                categories=list(entry.selectors.categories),
+                channels=list(entry.selectors.channels),
+                exclude_channels=list(entry.selectors.exclude_channels),
+                fail_open=entry.selectors.fail_open,
+            ),
+            burner=None,
+        )
+        scope_map.guild_to_scope[entry.id] = synthetic_scope_id
 
     # Step 1 — Gateway dormant session FIRST (CLAUDE.md MUST: a session that
     # only does REST without the WS handshake stands out as a self-bot in

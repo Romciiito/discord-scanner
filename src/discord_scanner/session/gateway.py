@@ -164,7 +164,7 @@ class DormantGateway:
 
         secure_mkdir(self._state_root)
         self._acquire_lock()
-        self._ws = await websockets.connect(GATEWAY_URL, max_size=2**20)
+        self._ws = await websockets.connect(GATEWAY_URL, max_size=2**24)
         try:
             await self._do_handshake(resume=False)
         except Exception:
@@ -233,6 +233,11 @@ class DormantGateway:
                 },
                 "compress": False,
                 "client_state": {"guild_versions": {}},
+                # Cap offline member-list inclusion in READY for guilds with
+                # >250 members. Real Discord clients send this; without it the
+                # READY payload blows up for accounts in many large guilds and
+                # the WS frame can exceed websockets.connect() max_size.
+                "large_threshold": 250,
             },
         }
 
@@ -426,7 +431,7 @@ class DormantGateway:
                 logger.debug("ws_close_error_on_reconnect", err=str(e))
         # 3. open a new connection + RESUME handshake
         pre_resume_fail = self._state.counters["resume_fail"]
-        self._ws = await websockets.connect(GATEWAY_URL, max_size=2**20)
+        self._ws = await websockets.connect(GATEWAY_URL, max_size=2**24)
         await self._do_handshake(resume=True)
         if self._state.counters["resume_fail"] > pre_resume_fail:
             return "reidentified"
